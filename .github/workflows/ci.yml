@@ -48,10 +48,28 @@ jobs:
         run: |
           ctxpack --version
           # Config file, including the precedence that is easy to get wrong.
-          printf 'budget = 20000\nmode = "coverage"\n' > ctxpack.toml
+          # TOML needs tomllib, which is stdlib only from 3.11, so write whichever
+          # format this interpreter can actually read -- the same thing a 3.10
+          # user has to do, and the reason the config tests are version-aware.
+          if python -c 'import tomllib' 2>/dev/null; then
+            printf 'budget = 20000\nmode = "coverage"\n' > ctxpack.toml
+            rm -f ctxpack.json
+          else
+            printf '{"budget": 20000, "mode": "coverage"}\n' > ctxpack.json
+            rm -f ctxpack.toml
+          fi
           ctxpack . -o /dev/null --stats --show-config
           ctxpack . -b 5000 -o /dev/null --stats
-          rm ctxpack.toml
+          rm -f ctxpack.toml ctxpack.json
+          # The refusal path on 3.10, if that is what we are running.
+          if ! python -c 'import tomllib' 2>/dev/null; then
+            printf 'budget = 1\n' > ctxpack.toml
+            if ctxpack . -o /dev/null 2>err.txt; then
+              echo "expected a clean refusal for TOML on 3.10" && exit 1
+            fi
+            grep -q '3.11' err.txt || { cat err.txt; exit 1; }
+            rm -f ctxpack.toml err.txt
+          fi
           # Every feature flag, once.
           ctxpack . -b 8000 --reach-weight 3 -q -f tree
           ctxpack . -b 8000 --outline -q -f tree
