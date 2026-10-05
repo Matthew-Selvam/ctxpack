@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -561,6 +562,36 @@ def test_factor_shared_says_so_when_outline_wins(capsys, header_repo: Path):
 # ---------------------------------------------------------------------------
 
 
+#: True where ``tomllib`` is available, i.e. Python 3.11+.
+TOML_SUPPORTED = sys.version_info >= (3, 11)
+
+
+def write_config(root: Path, settings: dict, *, name: str = "") -> Path:
+    """Write a config in whichever format this interpreter can actually read.
+
+    TOML needs ``tomllib``, which is stdlib only from 3.11. On 3.10 ctxpack
+    refuses a ``.toml`` file and says so -- correctly -- so the tests have to use
+    the format the running Python supports, which is exactly what a 3.10 user
+    has to do. Getting this wrong makes the whole config surface look broken on
+    the oldest supported version.
+    """
+    if not name:
+        name = "ctxpack.toml" if TOML_SUPPORTED else "ctxpack.json"
+    if name.endswith(".json"):
+        body = json.dumps(settings)
+    else:
+        lines = []
+        for key, value in settings.items():
+            rendered = json.dumps(value) if not isinstance(value, bool) else (
+                "true" if value else "false"
+            )
+            lines.append(f"{key} = {rendered}")
+        body = "\n".join(lines) + "\n"
+    path = root / name
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
 @pytest.fixture
 def configured(tmp_path: Path) -> Path:
     root = tmp_path / "configured"
@@ -572,9 +603,7 @@ def configured(tmp_path: Path) -> Path:
 
 
 def test_config_file_settings_are_applied(capsys, configured: Path):
-    (configured / "ctxpack.toml").write_text(
-        'budget = 4321\nmode = "coverage"\n', encoding="utf-8"
-    )
+    write_config(configured, {"budget": 4321, "mode": "coverage"})
     code, out, err = run(capsys, ["pack", str(configured), "-f", "tree"])
     assert code == 0
     assert "4,321 tokens budget" in out
@@ -589,9 +618,7 @@ def test_explicit_flag_beats_the_config_file(capsys, configured: Path):
     filled in, so config merging has to recover that from argv itself. Getting it
     wrong means a user cannot override a shared config file at all.
     """
-    (configured / "ctxpack.toml").write_text(
-        'budget = 8000\nmode = "coverage"\n', encoding="utf-8"
-    )
+    write_config(configured, {"budget": 8000, "mode": "coverage"})
     _, out, _ = run(capsys, ["pack", str(configured), "-f", "tree", "-b", "1500"])
     assert "1,500 tokens budget" in out
 
@@ -602,7 +629,7 @@ def test_explicit_flag_beats_the_config_file(capsys, configured: Path):
 
 
 def test_no_config_flag(capsys, configured: Path):
-    (configured / "ctxpack.toml").write_text("budget = 4321\n", encoding="utf-8")
+    write_config(configured, {"budget": 4321})
     _, out, _ = run(capsys, ["pack", str(configured), "-f", "tree", "--no-config"])
     assert "32,000 tokens budget" in out
 
@@ -616,24 +643,20 @@ def test_config_never_overrides_the_target_path(capsys, configured: Path, tmp_pa
     "." -- silently packing the current working directory instead. No error, just
     a bundle of an entirely different repository.
     """
-    (configured / "ctxpack.toml").write_text('budget = 8000\n', encoding="utf-8")
+    write_config(configured, {"budget": 8000})
     code, out, _ = run(capsys, ["pack", str(configured), "-f", "tree"])
     assert code == 0
     assert str(configured.resolve()) in out
 
 
 def test_config_exclude_applies(capsys, configured: Path):
-    (configured / "ctxpack.toml").write_text(
-        'exclude = ["*.log"]\n', encoding="utf-8"
-    )
+    write_config(configured, {"exclude": ["*.log"]})
     _, out, _ = run(capsys, ["pack", str(configured), "-f", "tree"])
     assert "noise.log" not in out
 
 
 def test_config_typo_is_reported(capsys, configured: Path):
-    (configured / "ctxpack.toml").write_text(
-        "budegt = 5\nbudget = 9000\n", encoding="utf-8"
-    )
+    write_config(configured, {"budegt": 5, "budget": 9000})
     code, out, err = run(capsys, ["pack", str(configured), "-f", "tree"])
     assert code == 0
     assert "budegt" in err
@@ -642,9 +665,7 @@ def test_config_typo_is_reported(capsys, configured: Path):
 
 
 def test_show_config(capsys, configured: Path):
-    (configured / "ctxpack.toml").write_text(
-        'budget = 4321\nmode = "depth"\n', encoding="utf-8"
-    )
+    write_config(configured, {"budget": 4321, "mode": "depth"})
     code, _, err = run(capsys, ["pack", str(configured), "-f", "tree", "--show-config"])
     assert code == 0
     assert "4321" in err and "(config)" in err
@@ -652,7 +673,10 @@ def test_show_config(capsys, configured: Path):
 
 
 def test_malformed_config_is_a_clean_error(capsys, configured: Path):
-    (configured / "ctxpack.toml").write_text("budget = = 3\n", encoding="utf-8")
+    # Deliberately invalid in both formats.
+    (configured / ("ctxpack.json" if TOML_SUPPORTED else "ctxpack.toml")).write_text(
+        "{ not valid", encoding="utf-8"
+    )
     code, _, err = run(capsys, ["pack", str(configured), "-f", "tree"])
     assert code == 2
     assert "ctxpack:" in err

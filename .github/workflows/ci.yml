@@ -56,7 +56,12 @@ jobs:
           ctxpack . -b 8000 --reach-weight 3 -q -f tree
           ctxpack . -b 8000 --outline -q -f tree
           ctxpack . -b 8000 --factor-shared -q -f tree
+          # --diff needs something to have changed, and a fresh CI checkout has
+          # a clean tree, so make a change first rather than asserting on a
+          # range that is legitimately empty.
+          echo "# touched by CI" >> README.md
           ctxpack . --diff HEAD -b 8000 -q -f tree
+          git checkout -- README.md
           ctxpack . -b 20000 -o bundle.md --stats
           ctxpack . -b 8000 -f xml -o bundle.xml
           ctxpack . -b 8000 -f json -o bundle.json
