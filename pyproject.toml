@@ -1,0 +1,89 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ctxpack"
+version = "0.1.0"
+description = "Pack any codebase into a token-budgeted context bundle for LLM agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Matthew Selvam" }]
+keywords = [
+  "llm",
+  "tokens",
+  "context-window",
+  "context-engineering",
+  "cli",
+  "agents",
+  "codebase",
+  "rag",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Build Tools",
+  "Topic :: Utilities",
+  "Typing :: Typed",
+]
+dependencies = []
+
+[project.optional-dependencies]
+# Only needed if you want ground-truth counts instead of the bundled estimator.
+exact = ["tiktoken>=0.7"]
+dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/Matthew-Selvam/ctxpack"
+Repository = "https://github.com/Matthew-Selvam/ctxpack"
+Issues = "https://github.com/Matthew-Selvam/ctxpack/issues"
+
+[project.scripts]
+ctxpack = "ctxpack.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ctxpack"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/ctxpack", "tests", "README.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 90
+target-version = "py310"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle
+    "W",   # warnings
+    "F",   # pyflakes
+    "I",   # import sorting
+    "UP",  # pyupgrade
+    "B",   # bugbear
+    "SIM", # simplify
+    "C4",  # comprehensions
+    "PERF",
+    "RUF",
+    "EXE",
+]
+ignore = [
+    "E501",   # long lines are handled by the formatter
+    "RUF012", # mutable class attrs are fine here
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The fitter inserts src/ on sys.path before importing ctxpack.
+"scripts/*" = ["E402"]
