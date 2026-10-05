@@ -47,6 +47,16 @@ jobs:
       - name: CLI smoke test
         run: |
           ctxpack --version
+          # Config file, including the precedence that is easy to get wrong.
+          printf 'budget = 20000\nmode = "coverage"\n' > ctxpack.toml
+          ctxpack . -o /dev/null --stats --show-config
+          ctxpack . -b 5000 -o /dev/null --stats
+          rm ctxpack.toml
+          # Every feature flag, once.
+          ctxpack . -b 8000 --reach-weight 3 -q -f tree
+          ctxpack . -b 8000 --outline -q -f tree
+          ctxpack . -b 8000 --factor-shared -q -f tree
+          ctxpack . --diff HEAD -b 8000 -q -f tree
           ctxpack . -b 20000 -o bundle.md --stats
           ctxpack . -b 8000 -f xml -o bundle.xml
           ctxpack . -b 8000 -f json -o bundle.json
