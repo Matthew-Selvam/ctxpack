@@ -102,3 +102,36 @@ jobs:
 
       - name: Compile all
         run: python -m compileall -q src scripts
+
+  bench:
+    name: bench (invariants)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[exact]"
+
+      # Runs entirely on synthetic repo shapes, so it needs no corpus and is
+      # deterministic. It is the canary for two things the unit tests cannot
+      # assert on a fixed fixture: that no budget is ever exceeded across a
+      # spread of repo shapes, and that every rendered format still parses when
+      # fed deliberately hostile content.
+      - name: Packing invariants and render integrity
+        run: |
+          python scripts/bench.py --synthetic --baseline bench-baseline.json --check
+
+      - name: Estimator accuracy against tiktoken
+        # Needs a real corpus, so this clones one small repo rather than
+        # depending on whatever happens to be checked out.
+        run: |
+          git clone --depth 1 https://github.com/psf/requests
+          python scripts/bench.py --root requests --baseline /tmp/bench.json --write
+          python scripts/bench.py --root requests --baseline /tmp/bench.json --check
+          echo "accuracy on a fresh corpus:"
+          python scripts/bench.py --root requests 2>/dev/null | head -12

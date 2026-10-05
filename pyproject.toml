@@ -85,5 +85,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# The fitter inserts src/ on sys.path before importing ctxpack.
+# The scripts insert src/ on sys.path before importing ctxpack, so module-level
+# imports are not at the top of the file.
 "scripts/*" = ["E402"]
+# bench.py deliberately tries several renderers in a loop and reports every
+# failure rather than dying on the first, so the try/except cannot be hoisted.
+"scripts/bench.py" = ["PERF203"]

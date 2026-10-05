@@ -131,6 +131,57 @@ def test_xml_round_trips_content(heuristic, tmp_path):
     assert any(t and t.strip() == content.strip() for t in texts)
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "".join(chr(c) for c in range(1, 9)),
+        "escape\x1b[31mcolour\x1b[0m",
+        "form\x0cfeed",
+        "vertical\x0btab",
+        "del\x7fchar",
+        "\ufffe\uffff",
+    ],
+    ids=["c0-controls", "ansi-escape", "formfeed", "vtab", "del", "noncharacters"],
+)
+def test_xml_survives_characters_xml_cannot_represent(heuristic, tmp_path, payload):
+    """Control characters make XML unparseable even inside CDATA.
+
+    Regression found by scripts/bench.py, which packs a directory of hostile
+    payloads and asserts every rendered format still parses. CDATA is not an
+    escape hatch: XML 1.0 restricts the character set itself.
+    """
+    (tmp_path / "nasty.py").write_text(f"VALUE = 1\n{payload}\n", encoding="utf-8")
+    packed = Packer(heuristic, Budget(total=8_000)).pack(discover(tmp_path))
+    root = ElementTree.fromstring(render(packed, "xml"))  # must parse
+    assert any(node.text and "VALUE = 1" in node.text for node in root.iter("file"))
+
+
+def test_nul_bytes_are_filtered_before_rendering(heuristic, tmp_path):
+    """NUL is handled one layer earlier: walk treats the file as binary.
+
+    Worth stating explicitly, because it means the renderers only ever have to
+    deal with the control characters that survive the binary sniff.
+    """
+    (tmp_path / "binary.py").write_bytes(b"VALUE = 1\n\x00\x00binary\n")
+    packed = Packer(heuristic, Budget(total=8_000)).pack(discover(tmp_path))
+    assert all(not d.path.endswith("binary.py") for d in packed.documents)
+    ElementTree.fromstring(render(packed, "xml"))
+
+
+def test_xml_safe_keeps_legitimate_whitespace():
+    from ctxpack.render import _xml_safe
+
+    assert _xml_safe("a\tb\nc\rd") == "a\tb\nc\rd"
+    assert _xml_safe("日本語 🎉 é") == "日本語 🎉 é"
+
+
+def test_xml_safe_strips_illegal_only():
+    from ctxpack.render import _xml_safe
+
+    assert _xml_safe("a\x01b\x1fc") == "abc"
+    assert _xml_safe("keep\ttabs") == "keep\ttabs"
+
+
 # -- json --------------------------------------------------------------------
 
 
@@ -190,3 +241,68 @@ def test_unknown_format_rejected(result):
 
 def test_markdown_is_the_default(result):
     assert render(result) == render(result, "markdown")
+
+
+# ---------------------------------------------------------------------------
+# regressions found by fuzzing
+# ---------------------------------------------------------------------------
+
+
+def test_index_fence_is_escaped(heuristic, tmp_path):
+    """The index must go through `fence()`, not a hardcoded ``` pair.
+
+    Regression: the index interpolated file paths into a fixed three-tick
+    fence, bypassing the escalation the file bodies got. A path containing a
+    newline plus backticks -- legal on macOS and Linux -- emitted a line-leading
+    fence that closed the index early and reopened a block that swallowed the
+    `## Files` heading.
+    """
+    (tmp_path / "x\n```").write_text("X = 1\n", encoding="utf-8")
+    (tmp_path / "normal.py").write_text("Y = 2\n", encoding="utf-8")
+    packed = Packer(heuristic, Budget(total=20_000)).pack(discover(tmp_path))
+    md = render(packed, "markdown")
+
+    assert "## Files" in md
+    # The Files heading must come after the index and before the later section,
+    # i.e. the index fence actually closed.
+    assert md.index("## Index") < md.index("## Files") < md.index("### 2.")
+    # The index fence escalated past the backticks in the path.
+    index_block = md.split("## Index", 1)[1].split("## Files", 1)[0]
+    assert "````" in index_block
+
+
+def test_heading_paths_cannot_break_the_document(heuristic, tmp_path):
+    """A newline in a filename must not end a markdown heading early.
+
+    The property that matters: the heading for a file is one line, and the
+    newline from the filename appears escaped inside it.
+    """
+    (tmp_path / "a\nb\n### injected").write_text("X = 1\n", encoding="utf-8")
+    packed = Packer(heuristic, Budget(total=20_000)).pack(discover(tmp_path))
+    md = render(packed, "markdown")
+
+    headings = [
+        line
+        for line in md.split("## Files", 1)[1].splitlines()
+        if line.startswith("### ")
+    ]
+    assert headings, "expected a file heading under ## Files"
+    for line in headings:
+        assert line.rstrip().endswith("`"), f"heading looks cut short: {line!r}"
+    assert "a\\nb\\n### injected" in "\n".join(headings)
+
+
+def test_backticks_in_a_path_do_not_close_an_inline_span(heuristic, tmp_path):
+    """A backtick in a filename must not terminate the heading's code span."""
+    (tmp_path / "we`ird.py").write_text("X = 1\n", encoding="utf-8")
+    packed = Packer(heuristic, Budget(total=20_000)).pack(discover(tmp_path))
+    md = render(packed, "markdown")
+
+    heading = next(
+        line for line in md.splitlines()
+        if line.startswith("### ") and "ird.py" in line
+    )
+    # Exactly two backticks: the span delimiters. The one from the filename was
+    # neutralised, so the span cannot be closed early.
+    assert heading.count("`") == 2, heading
+    assert "we'ird.py" in heading

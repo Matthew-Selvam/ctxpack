@@ -5,9 +5,15 @@ Four formats, because the consumer varies: ``markdown`` for pasting into a chat,
 ``tree`` when you want the map of a repo at the cheapest possible price.
 
 The fiddly parts of this module are all about not corrupting content. Source
-files contain triple backticks, ``]]>``, and ``&``; all three will silently
-break a naive renderer, so fences escalate, CDATA sections get split, and
-attributes are escaped with the stdlib.
+files contain triple backticks, ``]]>``, ``&``, and stray control characters
+copied out of terminal logs; all of them will silently break a naive renderer,
+so fences escalate, CDATA sections get split, attributes are escaped with the
+stdlib, and characters XML cannot represent are dropped -- see ``_xml_safe``,
+which exists because CDATA is not an escape hatch for them.
+
+Every format here is verified to parse against hostile payloads by
+``scripts/bench.py``, and by tests that feed the renderers exactly this
+material.
 """
 
 from __future__ import annotations
@@ -43,6 +49,16 @@ LANGUAGES: dict[str, str] = {
 
 _FENCE_RE = re.compile(r"`{3,}", re.MULTILINE)
 
+#: Printed once, above the hoisted blocks. A factored bundle is a reading aid,
+#: not a compilable artefact: the files carry markers in place of shared text.
+#: Saying so here is cheaper than having a reader wonder why the code no longer
+#: parses.
+_SHARED_WARNING = (
+    "> The files below have had repeated blocks replaced with references to this\n"
+    "> section, to spend fewer tokens on text that appeared many times over.\n"
+    "> The result is for reading, not for compiling."
+)
+
 
 def language_for(path: str) -> str:
     dot = path.rfind(".")
@@ -64,8 +80,37 @@ def fence(text: str, language: str = "") -> str:
     return f"{ticks}{language}\n{text}\n{ticks}"
 
 
+def _xml_safe(text: str) -> str:
+    """Remove characters XML 1.0 cannot represent, at any nesting depth.
+
+    CDATA is not an escape hatch for these: XML 1.0 restricts the character set
+    itself, so a file containing a stray ``\\x01`` -- a control code from a
+    binary-ish log, a terminal escape pasted into a comment -- makes the whole
+    document unparseable even though it is "inside" a CDATA section.
+
+    Removed rather than replaced: these characters are invisible in every
+    renderer, so keeping a visible placeholder would corrupt the source text
+    the model is trying to read, while dropping them loses nothing a reader
+    could have seen. Lone surrogates are handled the same way, since they
+    cannot be UTF-8 encoded at all.
+    """
+    return "".join(
+        char
+        for char in text
+        if (
+            # Tab, LF, CR, and the printable ranges.
+            char in "\t\n\r"
+            or "\x20" <= char <= "\ud7ff"
+            or "\ue000" <= char <= "\ufffd"
+            or "\U00010000" <= char <= "\U0010ffff"
+        )
+        and not ("\ud800" <= char <= "\udfff")
+    )
+
+
 def _cdata(text: str) -> str:
     """Wrap in CDATA, splitting any ``]]>`` the content contains."""
+    text = _xml_safe(text)
     if "]]>" in text:
         text = text.replace("]]>", "]]]]><![CDATA[>")
     return f"<![CDATA[{text}]]>"
@@ -110,12 +155,24 @@ def _outcome(result: PackResult) -> list[str]:
     return out
 
 
+def _label(path: str) -> str:
+    """Make a path safe to drop into a one-line markdown construct.
+
+    Filenames can contain newlines on macOS and Linux, and a raw one inside a
+    heading silently restructures the document: the heading ends early and the
+    remainder of the path becomes body text. Escaped rather than stripped, so the
+    reader can still tell what the file is called.
+    """
+    out = path.replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n")
+    return out.replace("`", "'")
+
+
 def _document_block(doc: Document, index: int) -> str:
     language = language_for(doc.path)
     body = fence(doc.text.rstrip("\n"), language)
     flag = " *(truncated)*" if doc.truncated else ""
     return (
-        f"### {index}. `{doc.path}`{flag}\n\n"
+        f"### {index}. `{_label(doc.path)}`{flag}\n\n"
         f"{_human(doc.tokens)} tokens · {_human(doc.lines)} lines\n\n"
         f"{body}\n"
     )
@@ -135,9 +192,12 @@ def _render_markdown(result: PackResult) -> str:
 
     if result.manifest_text:
         parts.append("## Index\n")
-        parts.append("```")
-        parts.append(result.manifest_text)
-        parts.append("```\n")
+        # Through `fence()`, not a hardcoded ``` pair. The index interpolates
+        # file paths, and a path containing a newline plus backticks would emit
+        # a line-leading fence that closes this block early and reopens a new one,
+        # swallowing the `## Files` heading into a code block. A filename really
+        # can contain a newline on macOS and Linux.
+        parts.append(fence(result.manifest_text))
 
     if result.documents:
         parts.append("## Files\n")
@@ -145,6 +205,15 @@ def _render_markdown(result: PackResult) -> str:
             _document_block(doc, index)
             for index, doc in enumerate(result.documents, start=1)
         )
+
+    if result.shared_blocks:
+        parts.append("## Shared blocks\n")
+        parts.append(_SHARED_WARNING)
+        parts.append("")
+        for block in result.shared_blocks:
+            parts.append(f"### {block.id} — {block.lines} lines\n")
+            parts.append(fence(block.text.rstrip("\n"), ""))
+            parts.append("")
 
     return "\n".join(parts)
 
@@ -155,14 +224,24 @@ def _render_tree(result: PackResult) -> str:
         _stats_line(result),
         *_outcome(result),
     ]
+    if result.shared_blocks:
+        parts.append(
+            f"shared blocks: {len(result.shared_blocks)} "
+            f"(bodies hoisted; see the markdown bundle)"
+        )
     if result.manifest_text:
         parts.append("")
         parts.append(result.manifest_text)
     return "\n".join(parts) + "\n"
 
 
+def _attr(value: str) -> str:
+    """Quote an XML attribute value, after making it representable at all."""
+    return quoteattr(_xml_safe(value))
+
+
 def _render_xml(result: PackResult) -> str:
-    root = quoteattr(str(result.root))
+    root = _attr(str(result.root))
     out = ['<?xml version="1.0" encoding="UTF-8"?>']
     out.append(
         "<ctxpack"
@@ -171,9 +250,9 @@ def _render_xml(result: PackResult) -> str:
         f' used="{result.accounted}"'
         f' files="{len(result.documents)}"'
         f' discovered="{result.discovered}"'
-        f' encoding={quoteattr(result.encoding)}'
-        f' method={quoteattr(result.method)}'
-        f' mode={quoteattr(result.mode)}'
+        f' encoding={_attr(result.encoding)}'
+        f' method={_attr(result.method)}'
+        f' mode={_attr(result.mode)}'
         ">"
     )
     out.append(
@@ -184,16 +263,16 @@ def _render_xml(result: PackResult) -> str:
         for entry in result.manifest:
             note = ' estimated="true"' if entry.estimated else ""
             out.append(
-                f'    <entry path={quoteattr(entry.path)}'
+                f'    <entry path={_attr(entry.path)}'
                 f' tokens="{entry.tokens}" bytes="{entry.size}"{note}/>'
             )
         out.append("  </index>")
     out.append("  <files>")
     for doc in result.documents:
         attrs = (
-            f'    <file path={quoteattr(doc.path)}'
+            f'    <file path={_attr(doc.path)}'
             f' tokens="{doc.tokens}" lines="{doc.lines}"'
-            f' language={quoteattr(language_for(doc.path))}'
+            f' language={_attr(language_for(doc.path))}'
             + (' truncated="true"' if doc.truncated else "")
             + ">"
         )
@@ -201,6 +280,16 @@ def _render_xml(result: PackResult) -> str:
         out.append(_cdata(doc.text))
         out.append("    </file>")
     out.append("  </files>")
+    if result.shared_blocks:
+        out.append("  <shared>")
+        for block in result.shared_blocks:
+            out.append(
+                f'    <block id={_attr(block.id)} lines="{block.lines}"'
+                f' occurrences="{block.occurrences}">'
+            )
+            out.append(_cdata(block.text))
+            out.append("    </block>")
+        out.append("  </shared>")
     out.append("</ctxpack>")
     return "\n".join(out) + "\n"
 
@@ -228,6 +317,15 @@ def _render_json(result: PackResult) -> str:
                 "estimated": e.estimated,
             }
             for e in result.manifest
+        ],
+        "shared_blocks": [
+            {
+                "id": block.id,
+                "lines": block.lines,
+                "occurrences": block.occurrences,
+                "text": block.text,
+            }
+            for block in result.shared_blocks
         ],
         "files": [
             {

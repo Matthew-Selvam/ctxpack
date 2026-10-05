@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+import warnings
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -139,6 +140,37 @@ _SNIFF = 8192
 #: Rough characters-per-token used when pricing a file we did not read.
 _SIZE_CPT = 3.4
 
+#: Most unbounded quantifiers permitted in one compiled pattern.
+#:
+#: Two unbounded quantifiers in the same path segment, separated only by
+#: literals the wildcard can also match, gives Python's engine an exponential
+#: number of ways to split the input: `*a*a*...*ab` measured 14ms with two, 1.1s
+#: with three and never finished with four, against a 200-character path. That
+#: is reachable from ordinary user input -- one .gitignore line -- and it turns
+#: `ctxpack .` into a hang.
+#:
+#: Patterns with more than this are pathological by construction and no real
+#: .gitignore uses them, so they degrade to matching nothing. Failing *open* is
+#: the safe direction: a pattern ctxpack cannot evaluate leaves files in the
+#: bundle that arguably should have been filtered out, rather than silently
+#: hiding files that were going to be included.
+#:
+#: Per-segment counts stay far below this in practice: `*.log`, `**/build`,
+#: `*_pb2.py` and every entry in DEFAULT_IGNORES use one.
+MAX_UNBOUNDED_QUANTIFIERS = 2
+
+#: Matches a bare unbounded quantifier, i.e. one with nothing between it and
+#: its neighbour that would prevent splitting the input.
+_UNBOUNDED_RE = re.compile(r"(?:\[\^/\]\*|\.\*)")
+
+#: Used for patterns ctxpack refuses to evaluate. Shared, because it is immutable
+#: and compiled once.
+_NEVER_MATCHES = re.compile(r"(?!)")
+
+
+class _TooManyWildcards(Exception):
+    """Internal signal: this pattern would backtrack catastrophically."""
+
 
 @dataclass(frozen=True)
 class IgnoreRule:
@@ -161,20 +193,31 @@ def _translate(pattern: str) -> str:
     while i < n:
         char = pattern[i]
         if char == "*":
-            if pattern[i : i + 2] == "**":
-                if pattern[i + 2 : i + 3] == "/":
-                    # git treats `a/**/b` as matching `a/b` as well as `a/x/b`:
-                    # `/**/` spans zero or more directory levels. The preceding
-                    # `/` is already in the output, so this only has to cover
-                    # the extra levels.
-                    out.append("(?:.*/)?")
-                    i += 3
-                    continue
+            # Consume the whole run of stars at once. A run of `*` is
+            # semantically identical to a single `*` (`[^/]*[^/]*` matches
+            # exactly what `[^/]*` does), but emitting one quantifier per star
+            # puts adjacent unbounded quantifiers in the regex, and Python's
+            # engine then explores every way of splitting the input between
+            # them. A `.gitignore` line of sixteen stars made `discover()` run
+            # for minutes on a 240-character path -- exponential in the star
+            # count, and reachable from ordinary user input.
+            run_end = i
+            while run_end < n and pattern[run_end] == "*":
+                run_end += 1
+            run = run_end - i
+            if run >= 2 and pattern[run_end : run_end + 1] == "/":
+                # git treats `a/**/b` as matching `a/b` as well as `a/x/b`:
+                # `/**/` spans zero or more directory levels. The preceding `/`
+                # is already in the output, so this only covers the extra ones.
+                out.append("(?:.*/)?")
+                i = run_end + 1
+                continue
+            if run >= 2:
                 out.append(".*")
-                i += 2
+                i = run_end
                 continue
             out.append("[^/]*")
-            i += 1
+            i = run_end
         elif char == "?":
             out.append("[^/]")
             i += 1
@@ -194,8 +237,41 @@ def _translate(pattern: str) -> str:
                 body = pattern[i + 1 : end]
                 if body.startswith("!"):
                     body = "^" + body[1:]
-                out.append(f"[{body}]")
-                i = end + 1
+                # Re-escape backslashes. gitignore treats `\` as an escape, but
+                # the regex engine treats a lone one as swallowing the closing
+                # bracket: `[a\]` compiled to an unterminated character set and
+                # raised out of `discover()` as a raw `re.PatternError`, killing
+                # `ctxpack .` with a traceback over four characters of
+                # .gitignore. Doubling the backslash keeps it a literal.
+                body = body.replace("\\", "\\\\")
+                # A literal '[' inside a class is legal but warned about, and the
+                # warning surfaces to the user of a tool that is supposed to be
+                # silent about other people's text. Escaping it is equivalent.
+                body = body.replace("[", "\\[")
+                candidate = f"[{body}]"
+                # Validated rather than trusted. A class body can still be
+                # invalid after escaping -- `[z-a]` is a reversed range, which
+                # raises "bad character range" -- and any such raise escapes as a
+                # traceback rather than a clean message. So compile it here and
+                # fall back to git's behaviour for a malformed class, which is to
+                # treat the bracket as an ordinary character.
+                try:
+                    # Compiled under warnings-as-errors on purpose. Several
+                    # class bodies are legal-but-suspicious enough that Python
+                    # emits a FutureWarning -- "possible nested set" for `[[`,
+                    # "possible set difference" for `[a--z]` -- and a tool that
+                    # reads other people's repositories should not print those
+                    # at the user. A body that warns is treated as malformed,
+                    # which is what git does with a bracket it cannot parse.
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error", FutureWarning)
+                        re.compile(candidate)
+                except (re.error, FutureWarning):
+                    out.append(re.escape("["))
+                    i = i + 1
+                else:
+                    out.append(candidate)
+                    i = end + 1
         elif char == "\\" and i + 1 < n:
             out.append(re.escape(pattern[i + 1]))
             i += 2
@@ -234,9 +310,25 @@ def compile_pattern(pattern: str) -> IgnoreRule | None:
 
     body = _translate(line)
     prefix = "" if anchored else "(?:.*/)?"
-    # The trailing group makes a matched directory swallow its contents, which
-    # is how git behaves and saves us from threading dir/file state around.
-    regex = re.compile(f"^{prefix}{body}(?:/.*)?$")
+    # Only the body is counted. The `(?:.*/)?` prefix and `(?:/.*)?` suffix both
+    # begin with `/`, which `[^/]*` can never match, so each has exactly one way
+    # to match and neither can multiply the search. Counting them degraded real
+    # patterns -- `src/**/*.ts` and ctxpack's own `*.generated.*`.
+    unbounded = len(_UNBOUNDED_RE.findall(body))
+    try:
+        if unbounded > MAX_UNBOUNDED_QUANTIFIERS:
+            raise _TooManyWildcards
+        # The trailing group makes a matched directory swallow its contents,
+        # which is how git behaves and saves threading dir/file state around.
+        regex = re.compile(f"^{prefix}{body}(?:/.*)?$")
+    except (_TooManyWildcards, re.error):
+        # Belt and braces. Fuzzing kept finding fresh ways to make a translated
+        # pattern either invalid or explosive -- unterminated classes, reversed
+        # ranges, stray backslashes, adjacent wildcards -- and each escaped
+        # `discover()` as a raw exception or a multi-minute hang, killing
+        # `ctxpack .` over a single .gitignore line. A pattern ctxpack cannot
+        # evaluate safely must match nothing, never crash or stall the run.
+        regex = _NEVER_MATCHES
     return IgnoreRule(source=pattern, negated=negated, regex=regex, dir_only=dir_only)
 
 

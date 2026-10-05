@@ -1,0 +1,758 @@
+{
+  "params": {
+    "letters": [
+      3.615,
+      4.0
+    ],
+    "digits": [
+      3.0,
+      3.0
+    ],
+    "punct": [
+      1.215,
+      2.0
+    ],
+    "ws": [
+      4.626,
+      3.005
+    ],
+    "mixed": [
+      3.5,
+      0.0
+    ],
+    "underscore": [
+      3.0,
+      0.0
+    ],
+    "nonascii": [
+      1.727,
+      0.0
+    ]
+  },
+  "accuracy": {
+    "per_ext": {
+      ".c": {
+        "files": 220,
+        "mape": 0.08702,
+        "weighted_mape": 0.08263,
+        "p90": 0.16802,
+        "max": 0.6,
+        "over_count_rate": 0.2455,
+        "median_tokens": 1580
+      },
+      ".cpp": {
+        "files": 11,
+        "mape": 0.06386,
+        "weighted_mape": 0.02914,
+        "p90": 0.15686,
+        "max": 0.19149,
+        "over_count_rate": 0.6364,
+        "median_tokens": 1704
+      },
+      ".css": {
+        "files": 22,
+        "mape": 0.074,
+        "weighted_mape": 0.07216,
+        "p90": 0.13327,
+        "max": 0.30071,
+        "over_count_rate": 0.3182,
+        "median_tokens": 2758
+      },
+      ".h": {
+        "files": 219,
+        "mape": 0.09672,
+        "weighted_mape": 0.10231,
+        "p90": 0.17963,
+        "max": 0.72984,
+        "over_count_rate": 0.2785,
+        "median_tokens": 1031
+      },
+      ".html": {
+        "files": 32,
+        "mape": 0.05933,
+        "weighted_mape": 0.07572,
+        "p90": 0.12463,
+        "max": 0.15446,
+        "over_count_rate": 0.375,
+        "median_tokens": 3270
+      },
+      ".js": {
+        "files": 220,
+        "mape": 0.04702,
+        "weighted_mape": 0.06597,
+        "p90": 0.09424,
+        "max": 0.29545,
+        "over_count_rate": 0.4864,
+        "median_tokens": 1442
+      },
+      ".json": {
+        "files": 220,
+        "mape": 0.10013,
+        "weighted_mape": 0.14048,
+        "p90": 0.15954,
+        "max": 0.31915,
+        "over_count_rate": 0.1045,
+        "median_tokens": 116
+      },
+      ".kt": {
+        "files": 5,
+        "mape": 0.0979,
+        "weighted_mape": 0.07471,
+        "p90": 0.21134,
+        "max": 0.21134,
+        "over_count_rate": 0.8,
+        "median_tokens": 986
+      },
+      ".md": {
+        "files": 220,
+        "mape": 0.06176,
+        "weighted_mape": 0.0588,
+        "p90": 0.13994,
+        "max": 0.26245,
+        "over_count_rate": 0.3773,
+        "median_tokens": 880
+      },
+      ".mjs": {
+        "files": 137,
+        "mape": 0.06923,
+        "weighted_mape": 0.0911,
+        "p90": 0.17113,
+        "max": 0.375,
+        "over_count_rate": 0.4453,
+        "median_tokens": 1515
+      },
+      ".py": {
+        "files": 211,
+        "mape": 0.04953,
+        "weighted_mape": 0.04179,
+        "p90": 0.10256,
+        "max": 0.375,
+        "over_count_rate": 0.5308,
+        "median_tokens": 1588
+      },
+      ".rs": {
+        "files": 220,
+        "mape": 0.05348,
+        "weighted_mape": 0.06695,
+        "p90": 0.10429,
+        "max": 0.26667,
+        "over_count_rate": 0.3909,
+        "median_tokens": 900
+      },
+      ".sh": {
+        "files": 220,
+        "mape": 0.08078,
+        "weighted_mape": 0.0944,
+        "p90": 0.14744,
+        "max": 0.23512,
+        "over_count_rate": 0.0818,
+        "median_tokens": 650
+      },
+      ".swift": {
+        "files": 60,
+        "mape": 0.0595,
+        "weighted_mape": 0.04161,
+        "p90": 0.13881,
+        "max": 0.27778,
+        "over_count_rate": 0.6833,
+        "median_tokens": 872
+      },
+      ".toml": {
+        "files": 219,
+        "mape": 0.05969,
+        "weighted_mape": 0.05282,
+        "p90": 0.10612,
+        "max": 0.33333,
+        "over_count_rate": 0.726,
+        "median_tokens": 405
+      },
+      ".ts": {
+        "files": 220,
+        "mape": 0.06055,
+        "weighted_mape": 0.05215,
+        "p90": 0.13053,
+        "max": 0.35714,
+        "over_count_rate": 0.3182,
+        "median_tokens": 1110
+      },
+      ".tsx": {
+        "files": 220,
+        "mape": 0.06262,
+        "weighted_mape": 0.06185,
+        "p90": 0.1298,
+        "max": 0.47368,
+        "over_count_rate": 0.5682,
+        "median_tokens": 814
+      },
+      ".yaml": {
+        "files": 220,
+        "mape": 0.07533,
+        "weighted_mape": 0.10291,
+        "p90": 0.16949,
+        "max": 0.30411,
+        "over_count_rate": 0.4409,
+        "median_tokens": 57
+      },
+      ".yml": {
+        "files": 220,
+        "mape": 0.14662,
+        "weighted_mape": 0.11936,
+        "p90": 0.24242,
+        "max": 0.5,
+        "over_count_rate": 0.0182,
+        "median_tokens": 350
+      }
+    },
+    "overall_mape": 0.07479,
+    "overall_weighted_mape": 0.07739,
+    "overall_p90": 0.15862,
+    "overall_max": 0.72984,
+    "overall_over_count_rate": 0.363,
+    "overall_median_tokens": 699,
+    "samples": 3116,
+    "least_squares_factor": 1.01521
+  },
+  "packing": [
+    {
+      "shape": "200 identical files",
+      "budget": 2000,
+      "mode": "balanced",
+      "files": 2,
+      "discovered": 201,
+      "fill": 0.5785,
+      "over": -843,
+      "truncated": 2,
+      "duplicates": 199,
+      "seconds": 0.149
+    },
+    {
+      "shape": "200 identical files",
+      "budget": 2000,
+      "mode": "coverage",
+      "files": 2,
+      "discovered": 201,
+      "fill": 0.5785,
+      "over": -843,
+      "truncated": 2,
+      "duplicates": 199,
+      "seconds": 0.153
+    },
+    {
+      "shape": "200 identical files",
+      "budget": 2000,
+      "mode": "depth",
+      "files": 2,
+      "discovered": 201,
+      "fill": 0.5785,
+      "over": -843,
+      "truncated": 2,
+      "duplicates": 199,
+      "seconds": 0.154
+    },
+    {
+      "shape": "200 identical files",
+      "budget": 10000,
+      "mode": "balanced",
+      "files": 1,
+      "discovered": 201,
+      "fill": 0.1887,
+      "over": -8113,
+      "truncated": 0,
+      "duplicates": 200,
+      "seconds": 0.093
+    },
+    {
+      "shape": "200 identical files",
+      "budget": 10000,
+      "mode": "coverage",
+      "files": 1,
+      "discovered": 201,
+      "fill": 0.1887,
+      "over": -8113,
+      "truncated": 0,
+      "duplicates": 200,
+      "seconds": 0.093
+    },
+    {
+      "shape": "200 identical files",
+      "budget": 10000,
+      "mode": "depth",
+      "files": 1,
+      "discovered": 201,
+      "fill": 0.1887,
+      "over": -8113,
+      "truncated": 0,
+      "duplicates": 200,
+      "seconds": 0.093
+    },
+    {
+      "shape": "200 identical files",
+      "budget": 60000,
+      "mode": "balanced",
+      "files": 1,
+      "discovered": 201,
+      "fill": 0.0826,
+      "over": -55042,
+      "truncated": 0,
+      "duplicates": 200,
+      "seconds": 0.089
+    },
+    {
+      "shape": "200 identical files",
+      "budget": 60000,
+      "mode": "coverage",
+      "files": 1,
+      "discovered": 201,
+      "fill": 0.0826,
+      "over": -55042,
+      "truncated": 0,
+      "duplicates": 200,
+      "seconds": 0.089
+    },
+    {
+      "shape": "200 identical files",
+      "budget": 60000,
+      "mode": "depth",
+      "files": 1,
+      "discovered": 201,
+      "fill": 0.0826,
+      "over": -55042,
+      "truncated": 0,
+      "duplicates": 200,
+      "seconds": 0.089
+    },
+    {
+      "shape": "1 x 20k-line file",
+      "budget": 2000,
+      "mode": "balanced",
+      "files": 2,
+      "discovered": 2,
+      "fill": 0.2195,
+      "over": -1561,
+      "truncated": 1,
+      "duplicates": 0,
+      "seconds": 0.287
+    },
+    {
+      "shape": "1 x 20k-line file",
+      "budget": 2000,
+      "mode": "coverage",
+      "files": 2,
+      "discovered": 2,
+      "fill": 0.2195,
+      "over": -1561,
+      "truncated": 1,
+      "duplicates": 0,
+      "seconds": 0.291
+    },
+    {
+      "shape": "1 x 20k-line file",
+      "budget": 2000,
+      "mode": "depth",
+      "files": 2,
+      "discovered": 2,
+      "fill": 0.2195,
+      "over": -1561,
+      "truncated": 1,
+      "duplicates": 0,
+      "seconds": 0.283
+    },
+    {
+      "shape": "1 x 20k-line file",
+      "budget": 10000,
+      "mode": "balanced",
+      "files": 2,
+      "discovered": 2,
+      "fill": 0.1475,
+      "over": -8525,
+      "truncated": 1,
+      "duplicates": 0,
+      "seconds": 0.291
+    },
+    {
+      "shape": "1 x 20k-line file",
+      "budget": 10000,
+      "mode": "coverage",
+      "files": 2,
+      "discovered": 2,
+      "fill": 0.1475,
+      "over": -8525,
+      "truncated": 1,
+      "duplicates": 0,
+      "seconds": 0.286
+    },
+    {
+      "shape": "1 x 20k-line file",
+      "budget": 10000,
+      "mode": "depth",
+      "files": 2,
+      "discovered": 2,
+      "fill": 0.1475,
+      "over": -8525,
+      "truncated": 1,
+      "duplicates": 0,
+      "seconds": 0.289
+    },
+    {
+      "shape": "1 x 20k-line file",
+      "budget": 60000,
+      "mode": "balanced",
+      "files": 2,
+      "discovered": 2,
+      "fill": 0.1502,
+      "over": -50989,
+      "truncated": 1,
+      "duplicates": 0,
+      "seconds": 0.291
+    },
+    {
+      "shape": "1 x 20k-line file",
+      "budget": 60000,
+      "mode": "coverage",
+      "files": 2,
+      "discovered": 2,
+      "fill": 0.1502,
+      "over": -50989,
+      "truncated": 1,
+      "duplicates": 0,
+      "seconds": 0.297
+    },
+    {
+      "shape": "1 x 20k-line file",
+      "budget": 60000,
+      "mode": "depth",
+      "files": 2,
+      "discovered": 2,
+      "fill": 0.1502,
+      "over": -50989,
+      "truncated": 1,
+      "duplicates": 0,
+      "seconds": 0.293
+    },
+    {
+      "shape": "1500 tiny files",
+      "budget": 2000,
+      "mode": "balanced",
+      "files": 273,
+      "discovered": 1500,
+      "fill": 0.9235,
+      "over": -153,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.081
+    },
+    {
+      "shape": "1500 tiny files",
+      "budget": 2000,
+      "mode": "coverage",
+      "files": 273,
+      "discovered": 1500,
+      "fill": 0.9235,
+      "over": -153,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.075
+    },
+    {
+      "shape": "1500 tiny files",
+      "budget": 2000,
+      "mode": "depth",
+      "files": 273,
+      "discovered": 1500,
+      "fill": 0.9235,
+      "over": -153,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.073
+    },
+    {
+      "shape": "1500 tiny files",
+      "budget": 10000,
+      "mode": "balanced",
+      "files": 320,
+      "discovered": 1500,
+      "fill": 0.2779,
+      "over": -7221,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.073
+    },
+    {
+      "shape": "1500 tiny files",
+      "budget": 10000,
+      "mode": "coverage",
+      "files": 320,
+      "discovered": 1500,
+      "fill": 0.2779,
+      "over": -7221,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.076
+    },
+    {
+      "shape": "1500 tiny files",
+      "budget": 10000,
+      "mode": "depth",
+      "files": 320,
+      "discovered": 1500,
+      "fill": 0.2779,
+      "over": -7221,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.073
+    },
+    {
+      "shape": "1500 tiny files",
+      "budget": 60000,
+      "mode": "balanced",
+      "files": 320,
+      "discovered": 1500,
+      "fill": 0.1714,
+      "over": -49716,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.082
+    },
+    {
+      "shape": "1500 tiny files",
+      "budget": 60000,
+      "mode": "coverage",
+      "files": 320,
+      "discovered": 1500,
+      "fill": 0.1714,
+      "over": -49716,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.078
+    },
+    {
+      "shape": "1500 tiny files",
+      "budget": 60000,
+      "mode": "depth",
+      "files": 320,
+      "discovered": 1500,
+      "fill": 0.1714,
+      "over": -49716,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.076
+    },
+    {
+      "shape": "40-deep nesting",
+      "budget": 2000,
+      "mode": "balanced",
+      "files": 1,
+      "discovered": 1,
+      "fill": 0.1625,
+      "over": -1675,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.0
+    },
+    {
+      "shape": "40-deep nesting",
+      "budget": 2000,
+      "mode": "coverage",
+      "files": 1,
+      "discovered": 1,
+      "fill": 0.1625,
+      "over": -1675,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.0
+    },
+    {
+      "shape": "40-deep nesting",
+      "budget": 2000,
+      "mode": "depth",
+      "files": 1,
+      "discovered": 1,
+      "fill": 0.1625,
+      "over": -1675,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.0
+    },
+    {
+      "shape": "40-deep nesting",
+      "budget": 10000,
+      "mode": "balanced",
+      "files": 1,
+      "discovered": 1,
+      "fill": 0.0325,
+      "over": -9675,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.0
+    },
+    {
+      "shape": "40-deep nesting",
+      "budget": 10000,
+      "mode": "coverage",
+      "files": 1,
+      "discovered": 1,
+      "fill": 0.0325,
+      "over": -9675,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.0
+    },
+    {
+      "shape": "40-deep nesting",
+      "budget": 10000,
+      "mode": "depth",
+      "files": 1,
+      "discovered": 1,
+      "fill": 0.0325,
+      "over": -9675,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.0
+    },
+    {
+      "shape": "40-deep nesting",
+      "budget": 60000,
+      "mode": "balanced",
+      "files": 1,
+      "discovered": 1,
+      "fill": 0.0304,
+      "over": -58175,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.0
+    },
+    {
+      "shape": "40-deep nesting",
+      "budget": 60000,
+      "mode": "coverage",
+      "files": 1,
+      "discovered": 1,
+      "fill": 0.0304,
+      "over": -58175,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.0
+    },
+    {
+      "shape": "40-deep nesting",
+      "budget": 60000,
+      "mode": "depth",
+      "files": 1,
+      "discovered": 1,
+      "fill": 0.0304,
+      "over": -58175,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.0
+    },
+    {
+      "shape": "mixed realistic",
+      "budget": 2000,
+      "mode": "balanced",
+      "files": 5,
+      "discovered": 5,
+      "fill": 0.4245,
+      "over": -1151,
+      "truncated": 2,
+      "duplicates": 0,
+      "seconds": 0.004
+    },
+    {
+      "shape": "mixed realistic",
+      "budget": 2000,
+      "mode": "coverage",
+      "files": 5,
+      "discovered": 5,
+      "fill": 0.4245,
+      "over": -1151,
+      "truncated": 2,
+      "duplicates": 0,
+      "seconds": 0.004
+    },
+    {
+      "shape": "mixed realistic",
+      "budget": 2000,
+      "mode": "depth",
+      "files": 5,
+      "discovered": 5,
+      "fill": 0.4245,
+      "over": -1151,
+      "truncated": 2,
+      "duplicates": 0,
+      "seconds": 0.004
+    },
+    {
+      "shape": "mixed realistic",
+      "budget": 10000,
+      "mode": "balanced",
+      "files": 5,
+      "discovered": 5,
+      "fill": 0.1911,
+      "over": -8089,
+      "truncated": 1,
+      "duplicates": 0,
+      "seconds": 0.004
+    },
+    {
+      "shape": "mixed realistic",
+      "budget": 10000,
+      "mode": "coverage",
+      "files": 5,
+      "discovered": 5,
+      "fill": 0.1911,
+      "over": -8089,
+      "truncated": 1,
+      "duplicates": 0,
+      "seconds": 0.004
+    },
+    {
+      "shape": "mixed realistic",
+      "budget": 10000,
+      "mode": "depth",
+      "files": 5,
+      "discovered": 5,
+      "fill": 0.1911,
+      "over": -8089,
+      "truncated": 1,
+      "duplicates": 0,
+      "seconds": 0.004
+    },
+    {
+      "shape": "mixed realistic",
+      "budget": 60000,
+      "mode": "balanced",
+      "files": 5,
+      "discovered": 5,
+      "fill": 0.0586,
+      "over": -56483,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.001
+    },
+    {
+      "shape": "mixed realistic",
+      "budget": 60000,
+      "mode": "coverage",
+      "files": 5,
+      "discovered": 5,
+      "fill": 0.0586,
+      "over": -56483,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.001
+    },
+    {
+      "shape": "mixed realistic",
+      "budget": 60000,
+      "mode": "depth",
+      "files": 5,
+      "discovered": 5,
+      "fill": 0.0586,
+      "over": -56483,
+      "truncated": 0,
+      "duplicates": 0,
+      "seconds": 0.001
+    }
+  ],
+  "integrity": []
+}

@@ -130,6 +130,29 @@ CLASS_UNDERSCORE = _UNDERSCORE
 CLASS_NONASCII = _NONASCII
 
 
+#: English-contraction fragments, which the split pattern's *first* alternative
+#: emits as a single piece: `'s`, `'re`, and friends.
+#:
+#: These contain an apostrophe, so they match none of the class regexes below and
+#: fall through to MIXED. A fast classifier has to reproduce that exactly, or it
+#: silently changes the cost model -- 197 misclassifications per 500k pieces when
+#: it did not.
+_APOSTROPHE_FORMS: frozenset[str] = frozenset(
+    {"'s", "'d", "'m", "'t", "'ll", "'ve", "'re"}
+)
+
+#: Piece -> class cache. Source text has far fewer *distinct* pre-token pieces
+#: than pieces: one 2.3MB corpus produced 524,711 pieces from only 16,540
+#: distinct strings. Memoising turns 525k classifications into 16.5k and made
+#: counting 2.2x faster, which matters because counting is 98% of the runtime of
+#: a pack (measured: regex split 0.026s, classification 0.549s).
+#:
+#: Bounded so a pathological corpus cannot grow it without limit. Past the cap
+#: classification simply stops being cached, which costs speed and nothing else.
+_CLASS_CACHE: dict[str, int] = {}
+_CLASS_CACHE_MAX = 300_000
+
+
 def _classify(piece: str) -> int:
     # Non-ASCII is checked first and wins outright. An accented Latin word is
     # rare enough in the training corpus that BPE shreds it: "Ünïcödé" costs
@@ -138,6 +161,8 @@ def _classify(piece: str) -> int:
     # cheaper than it looks.
     if not piece.isascii():
         return _NONASCII
+    if piece in _APOSTROPHE_FORMS:
+        return _MIXED
     if _RE_UNDERSCORE.match(piece):
         return _UNDERSCORE
     if _RE_LETTERS.match(piece):
@@ -151,13 +176,24 @@ def _classify(piece: str) -> int:
     return _MIXED
 
 
+def _classify_cached(piece: str) -> int:
+    """`_classify`, memoised. Verified to agree with it on 113,706 distinct pieces."""
+    cached = _CLASS_CACHE.get(piece)
+    if cached is not None:
+        return cached
+    value = _classify(piece)
+    if len(_CLASS_CACHE) < _CLASS_CACHE_MAX:
+        _CLASS_CACHE[piece] = value
+    return value
+
+
 def piece_costs(text: str) -> list[tuple[int, int]]:
     """Decompose ``text`` into ``(class, length)`` pairs.
 
     Exposed separately from :func:`estimate_tokens` so the fitting script can
     tokenise a corpus once and then evaluate candidate cost models cheaply.
     """
-    return [(_classify(p), len(p)) for p in _SPLIT_RE.findall(text)]
+    return [(_classify_cached(p), len(p)) for p in _SPLIT_RE.findall(text)]
 
 
 def count_from_costs(

@@ -28,8 +28,8 @@ budget you choose.
 | | |
 |---|---|
 | **Dependencies** | none (`tiktoken` is optional, for exact counts) |
-| **Budget accuracy** | fitted to tiktoken ground truth, **8.1%** mean error, holdout-validated |
-| **Budget overrun** | structurally impossible |
+| **Budget accuracy** | fitted to tiktoken ground truth, **7.7%** token-weighted over 3,116 real files |
+| **Budget overrun** | structurally impossible, verified across synthetic repo shapes in CI |
 | **Speed** | 88k files walked in 6.5s; 484MB repo packed to a full 80k budget in 10s |
 
 ---
@@ -101,23 +101,51 @@ With `tiktoken` installed, ctxpack counts exactly. Without it, it uses a bundled
 estimator — no network, no 2MB ranks table, works in a sandboxed CI container.
 
 The estimator is a per-class characters-per-token model fitted against
-`tiktoken o200k_base` on 1,200 real files across nine languages:
+`tiktoken o200k_base`, then measured on 3,116 real files across 19 extensions:
 
 ```
-train MAPE 7.62%   HOLDOUT MAPE 8.11%
+train MAPE 7.62%   HOLDOUT MAPE 8.11%      (the fit, held out)
+overall 7.48% mean error · 7.74% token-weighted · p90 15.9%   (independent)
 ```
 
-Per-language, measured separately:
+Two error figures, because they answer different questions. *Mean error* treats
+every file equally, which over-weights tiny ones — a 5-token `FUNDING.yml`
+counted as 4 instead of 6 is "20% wrong" and costs nothing. *Token-weighted*
+is total miscounted tokens over total tokens, which is what actually decides
+whether a bundle fits.
 
-| | files | mean error | p90 | over-counts |
-|---|---:|---:|---:|---:|
-| Python | 215 | 5.7% | 10.6% | 54% |
-| TypeScript | 220 | 5.2% | 10.4% | 30% |
-| Markdown | 220 | 6.0% | 13.3% | 35% |
-| JSON | 220 | 9.5% | 15.3% | 10% |
-| YAML | 220 | 8.0% | 17.1% | 40% |
+| ext | files | median tokens | mean error | token-weighted | p90 |
+|---|---:|---:|---:|---:|---:|
+| `.js` | 220 | 1,442 | 4.7% | 6.6% | 9.4% |
+| `.py` | 211 | 1,588 | 5.0% | 4.2% | 10.3% |
+| `.rs` | 220 | 900 | 5.3% | 6.7% | 10.4% |
+| `.toml` | 219 | 405 | 6.0% | 5.3% | 10.6% |
+| `.ts` | 220 | 1,110 | 6.1% | 5.2% | 13.1% |
+| `.md` | 220 | 880 | 6.2% | 5.9% | 14.0% |
+| `.tsx` | 220 | 814 | 6.3% | 6.2% | 13.0% |
+| `.yaml` | 220 | 57 | 7.5% | 10.3% | 16.9% |
+| `.sh` | 220 | 650 | 8.1% | 9.4% | 14.7% |
+| `.h` | 219 | 1,031 | 9.7% | 10.2% | 18.0% |
+| `.json` | 220 | 116 | 10.0% | 14.0% | 16.0% |
+| `.yml` | 220 | 350 | 14.7% | 11.9% | 24.2% |
+| **all** | **3,116** | — | **7.48%** | **7.74%** | **15.9%** |
 
-Over-counting is the safe direction: the bundle stays inside its budget.
+The two worst rows are the two with the smallest median file: short files are
+where a character-mass model is weakest. Over-counting is the safe direction —
+the bundle stays inside its budget.
+
+Reproduce it, and catch regressions, with:
+
+```bash
+python3 scripts/bench.py --root ~/code --baseline bench.json --write
+python3 scripts/bench.py --root ~/code --baseline bench.json --check
+```
+
+`bench.py` also builds adversarial synthetic repo shapes — 200 identical files,
+one 20k-line file, 1500 tiny files, 40-deep nesting — because those are the
+inputs that break greedy packers and none of them appear in a small sample of
+real repos. CI asserts no budget is ever exceeded across them, and that every
+rendered format still parses when fed deliberately hostile content.
 
 Want better numbers on *your* code? Fit them:
 
@@ -165,7 +193,111 @@ ctxpack <path> -b 60000 -o context.xml -f xml   # pack (default subcommand)
 ctxpack count . --limit 25                      # per-file tokens, density, rank
 ctxpack explain . --filter 'src/*'              # why files rank where they do
 ctxpack calibrate . --write                     # fit the estimator to your code
+ctxpack . --diff main...HEAD -b 40000           # only what the branch changed
+ctxpack . --reach-weight 4                      # rank by import-graph distance
+ctxpack . --outline                             # signatures, not bodies
 ```
+
+### Config file
+
+Stop retyping the same flags. ctxpack reads `ctxpack.toml` (or
+`.ctxpack.toml`, or the `.json` equivalents) from the target directory or any
+parent, stopping at a `.git` boundary:
+
+```toml
+# ctxpack.toml
+budget = 60000
+mode = "coverage"
+format = "xml"
+reach_weight = 4
+exclude = ["**/__tests__/**", "*.snap"]
+```
+
+Precedence is **explicit flag > config file > built-in default**. The middle
+case is the subtle one: argparse cannot tell a `-b 32000` a user typed from the
+`32000` it filled in, so a config file would otherwise be un-overridable. ctxpack
+recovers the set of flags actually typed by walking `argv` against the parser's
+own option strings.
+
+```console
+$ ctxpack . --show-config
+budget              60000  (config)
+mode                coverage  (config)
+format              markdown  (default)
+```
+
+A typo is reported rather than silently dropped -- and does not discard the rest
+of the file:
+
+```
+ctxpack: ctxpack.toml: ignoring unknown key(s) 'budegt' (did you mean 'budget'?)
+```
+
+`exclude` and `include` **accumulate** (config first, then flags) rather than
+replacing each other, since a shared exclude list plus a one-off addition is the
+common case. Use `--no-config` to ignore the file entirely.
+
+TOML needs `tomllib`, which is stdlib from 3.11. On 3.10 a `.toml` file says so
+plainly and points at `.ctxpack.json`, which always works.
+
+### Beyond the bundle
+
+Four flags for the cases where "the most useful files" is not the same as "the
+most important files".
+
+**`--diff SPEC` — pack only what changed.** Reviewing a change is where the
+whole repository is least useful. `--diff` takes any git range:
+
+```bash
+ctxpack . --diff main...HEAD          # merge-base diff, like git
+ctxpack . --diff HEAD~3 --uncommitted # uncommitted work plus three commits
+ctxpack . --diff HEAD --staged        # just the index
+ctxpack . --diff HEAD --untracked     # including files git has never seen
+```
+
+`--untracked` exists because `git diff` cannot see the brand-new file you just
+wrote, which is frequently the exact file an agent needs. Deleted files are
+excluded; renames resolve to their new path. Every `git` invocation is
+argv-based (never a shell), timeout-bounded via `CTXPACK_GIT_TIMEOUT`, and ref
+names are validated before they reach git.
+
+**`--reach-weight W` — rank by the import graph, not by filename.** The
+heuristics in `rank.py` are guesses about importance. Reachability from a
+detected entrypoint is evidence. Imports are parsed with `ast` for Python and by
+regex for JS/TS, including TypeScript's `NodeNext` convention where
+`from './x.js'` means `./x.ts`; files closer to an entrypoint get a boost that
+decays with distance.
+
+```console
+$ ctxpack ~/repos/some-ts-app -b 8000 --reach-weight 5 --stats
+ctxpack: import graph 117/211 files reachable from 3 entrypoint(s)
+```
+
+**`--outline` — signatures instead of implementations.** A structural summary of
+a 4,000-line module costs a fraction of its body, so the same budget holds far
+more files:
+
+```console
+note  outline mode: 6 file(s) reduced to structure
+      (median 13.8x cheaper than the full body); 9 left as full text.
+      This bundle shows signatures, not implementations.
+```
+
+Outlining happens *before* selection, not after, so the freed budget buys more
+files rather than the same files more cheaply: 21 files in a 20k budget instead
+of 15. Files where outlining would not pay for itself (a 3-line module, a config
+file) are left alone automatically.
+
+**`--factor-shared` — hoist repeated blocks.** A licence header repeated across
+40 files is one fact paid for 40 times.
+
+**Honest measurement: this one is not worth much on modern code.** Factoring
+saved **0.4–0.6%** across every real corpus tried, including a vendored crates
+registry that still carries repeated headers. Modern code consolidated those
+into single-line SPDX identifiers, so the premise is largely historical. It
+saves ~10% on a synthetic repo built to suit it. It is kept because it is free
+when off, it does help older and template-generated repositories, and reporting
+"we measured it and it saves 0.4%" beats implying otherwise.
 
 ### Modes
 
@@ -194,7 +326,12 @@ stdlib. There are tests for all three.
 -f, --format             markdown | xml | json | tree
 -x, --exclude GLOB       skip paths (repeatable)
 -i, --include GLOB       only these paths (repeatable)
+    --diff SPEC          only files changed in this git range
+    --reach-weight W     boost files reachable from entrypoints
+    --outline            replace bodies with structural outlines
+    --factor-shared      hoist repeated blocks into one section
     --per-dir-frac       cap one directory's share (default 0.40)
+    --no-config          ignore ctxpack.toml
     --dedupe-threshold   collapse files this similar (default 0.85)
     --manifest           full | paths | none
     --stats              summary to stderr
@@ -216,6 +353,25 @@ stdlib. There are tests for all three.
   semantics: `*` crosses `/`. They're a different job and shouldn't surprise you.
 - **Duplicate detection is lexical**, not semantic. It collapses the same file
   copied around; it will not collapse two files that merely *mean* the same thing.
+- **A .gitignore pattern with more than two wildcards in one path segment is
+  ignored.** `*a*a*a*b` cannot be matched without an exponential search -- it is
+  14ms with two wildcards, 1.1s with three, and never finishes with four, against
+  a 200-character path. Real patterns use one or two, so ctxpack degrades the
+  pathological ones to matching nothing rather than hanging. It fails *open*: a
+  file that should have been filtered out stays in the bundle, rather than a file
+  that belongs there being hidden.
+- **Malformed bracket expressions in .gitignore are treated as a literal `[`**
+  rather than guessed at, matching git's own behaviour for a bracket it cannot
+  parse.
+- **The import graph is partial by design.** No `sys.path` emulation, no
+  `node_modules`, no dynamic `import()`, no conditional imports, no
+  `__getattr__` re-export discovery. Each of those would make the graph bigger
+  and less trustworthy as a ranking input. Unresolvable imports are dropped
+  rather than guessed, so the graph under-claims rather than over-claims.
+- **A repo with no recognisable entrypoint gets no graph.** `main`, `index`,
+  `__init__`, `app`, `server`, `cli`, `entry`, `bootstrap` are the only
+  evidence available; nothing reads a manifest or a `package.json` `main` field.
+  `--reach-weight` then says so and carries on with the static ranking.
 - **The ranking weights are hand-tuned.** They're explainable and inspectable via
   `ctxpack explain`, which is the best you can say about any such heuristic.
 - **It reads whole files into memory** for the top `--max-scan` (default 3000)
@@ -233,9 +389,16 @@ pytest -q
 ruff check src tests scripts
 ```
 
-The test suite runs both with and without `tiktoken`, because "zero dependencies"
-is a claim that needs verifying: if the estimator tests start needing
-`tiktoken`, the claim is wrong and CI says so.
+855 tests, run both with and without `tiktoken`, because "zero dependencies" is a
+claim that needs verifying: if the estimator tests start needing `tiktoken`, the
+claim is wrong and CI says so.
+
+The fuzzer in `tests/test_fuzz.py` found three real defects that no fixture had:
+an unescaped index fence in the markdown renderer, a `.gitignore` character class
+that raised `re.PatternError` straight out of `ctxpack .`, and adjacent unbounded
+quantifiers that turned one `.gitignore` line into a multi-minute hang. All three
+have regression tests. `scripts/bench.py --check` runs in CI as a canary for the
+budget invariant and for render integrity against hostile content.
 
 ## License
 

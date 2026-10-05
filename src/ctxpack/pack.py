@@ -25,6 +25,7 @@ from __future__ import annotations
 import math
 import re
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -166,6 +167,23 @@ class Duplicate:
     similarity: float
 
 
+@dataclass(frozen=True)
+class SharedBlock:
+    """A block hoisted out of several files into one place.
+
+    A separate type from :mod:`ctxpack.boiler`'s ``Block`` on purpose: the
+    boiler type is frozen and carries detection metadata (projected savings,
+    which file it came from first). What a rendered bundle needs is just an id
+    to point markers at plus the text, so the CLI converts rather than
+    mutating.
+    """
+
+    id: str
+    lines: int
+    occurrences: int
+    text: str
+
+
 @dataclass
 class PackResult:
     root: Path
@@ -185,6 +203,11 @@ class PackResult:
     ignored: int = 0
     duplicates: list[Duplicate] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    #: Blocks hoisted out of many files into one shared section, produced by
+    #: :mod:`ctxpack.boiler`. Attached post-hoc by the CLI rather than computed
+    #: here, because factoring is a rendering decision about the bundle rather
+    #: than part of choosing which files belong in it.
+    shared_blocks: list[SharedBlock] = field(default_factory=list)
 
     @property
     def content_tokens(self) -> int:
@@ -264,7 +287,21 @@ class _LineIndex:
 
 
 class Packer:
-    """Builds a :class:`PackResult` from a :class:`Discovery`."""
+    """Builds a :class:`PackResult` from a :class:`Discovery`.
+
+    ``rerank`` replaces the default ranking outright, which is how the import
+    graph gets a vote: the caller computes hop distances and hands back a
+    re-scored list. It is a parameter rather than a hard dependency because
+    reachability analysis is optional and genuinely slower -- a caller that
+    does not want it should not pay for it, and ``pack.py`` should not import a
+    module it does not need.
+
+    ``transform`` rewrites a file's text *before* it is counted, which is what
+    makes ``--outline`` worth using. Shrinking bodies after selection would
+    leave the freed budget unspent -- selection had already decided the file was
+    too big to fit. Transforming first means the packer sees the outline's real
+    cost and packs correspondingly more files.
+    """
 
     def __init__(
         self,
@@ -273,6 +310,8 @@ class Packer:
         *,
         mode: str = "balanced",
         progress=None,
+        rerank: Callable[[list[Candidate]], list[Scored]] | None = None,
+        transform: Callable[[Candidate, str], str] | None = None,
     ) -> None:
         if mode not in MODES:
             raise CtxpackError(
@@ -282,6 +321,8 @@ class Packer:
         self.budget = budget
         self.mode = mode
         self.progress = progress
+        self.rerank = rerank or rank_all
+        self.transform = transform
 
     # -- public ------------------------------------------------------------
 
@@ -289,7 +330,7 @@ class Packer:
         budget = self.budget
         notes: list[str] = []
 
-        scored = rank_all(discovery.files)
+        scored = self.rerank(discovery.files)
         if budget.max_scan and len(scored) > budget.max_scan:
             notes.append(
                 f"scanned the top {budget.max_scan:,} of {len(scored):,} files by "
@@ -307,6 +348,10 @@ class Packer:
             if text is None:
                 unreadable.append(item.candidate)
                 continue
+            if self.transform is not None:
+                # Transform before counting, so the budget is spent against the
+                # text that will actually be shipped.
+                text = self.transform(item.candidate, text)
             count = self.tokenizer.count(text)
             documents.append(
                 Document(

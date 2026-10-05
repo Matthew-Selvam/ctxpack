@@ -317,6 +317,49 @@ def test_ctxpack_error_is_a_clean_message(capsys):
         render(None, "nope")
 
 
+def test_subcommand_name_that_is_also_a_directory(tmp_path, monkeypatch, capsys):
+    """`ctxpack count` in a repo containing `count/` must not silently misread.
+
+    Guessing wrong is invisible: the subcommand happily reports on the whole
+    current directory, so the user gets a token table for their repository
+    instead of a bundle for the directory they named.
+    """
+    root = tmp_path / "proj"
+    (root / "count").mkdir(parents=True)
+    (root / "count" / "a.py").write_text("X = 1\n", encoding="utf-8")
+    monkeypatch.chdir(root)
+
+    code, _, err = run(capsys, ["count"])
+    assert code == 2
+    assert "both a subcommand and a path" in err
+
+    # Disambiguating forms all work. Bundle paths are relative to the packed
+    # root, so packing ./count yields "a.py", not "count/a.py".
+    code, out, _ = run(capsys, ["./count", "-b", "2000", "-q", "-f", "tree"])
+    assert code == 0
+    assert out.rstrip().endswith("a.py")
+    assert str((root / "count").resolve()) in out
+
+    code, _, _ = run(capsys, ["count", "--json"])
+    assert code == 0
+
+
+def test_subcommand_name_that_is_a_directory_is_fine_when_flagged(capsys, project: Path):
+    """No ambiguity error when the user clearly means the subcommand."""
+    (project / "count").mkdir()
+    (project / "count" / "x.py").write_text("Y = 2\n", encoding="utf-8")
+    code, out, _ = run(capsys, ["count", str(project), "--json", "-n", "0"])
+    assert code == 0
+    assert json.loads(out)["files"]
+
+
+def test_missing_subcommand_name_directory_is_unaffected(capsys, project: Path, monkeypatch):
+    monkeypatch.chdir(project)
+    code, out, _ = run(capsys, ["count", "--json", "-n", "0"])
+    assert code == 0
+    assert out
+
+
 def test_module_entrypoint_exists():
     import ctxpack.__main__ as entry
 

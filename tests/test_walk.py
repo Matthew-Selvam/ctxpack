@@ -286,3 +286,76 @@ def test_counts_are_sane(project: Path):
     assert found.directories > 0
     assert found.total_bytes > 0
     assert found.text_files == len(found.files)
+
+
+# ---------------------------------------------------------------------------
+# regressions found by fuzzing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [r"[\]]", r"[a\]", r"[\\]", "[!]abc]", "[a-]x", "[]]"],
+)
+def test_character_class_never_raises(pattern):
+    """A malformed bracket expression must not raise out of `discover`.
+
+    Regression: the class body was sliced out of the pattern and re-wrapped
+    without re-escaping, so `[a\\]` compiled to an unterminated character set.
+    `re.PatternError` is not a `CtxpackError`, so it escaped the CLI as a
+    traceback -- four characters of .gitignore killing `ctxpack .`.
+    """
+    rule = compile_pattern(pattern)
+    assert rule is not None
+    assert rule.matches("a]") in (True, False)
+
+
+def test_character_class_still_matches_ordinary_ranges():
+    assert matches("[ab]*.md", "alpha.md")
+    assert not matches("[ab]*.md", "gamma.md")
+    assert matches("[a-z].txt", "q.txt")
+
+
+def test_star_runs_do_not_backtrack():
+    """A run of `*` must not produce adjacent unbounded quantifiers.
+
+    Regression: each star became its own quantifier, so Python's engine explored
+    every way of splitting the input between them. Sixteen stars against a
+    240-character path ran for minutes -- exponential in the star count and
+    reachable from ordinary user input, since one .gitignore line is all it takes.
+    """
+    import time
+
+    path = "a" * 240 + "/b"
+    for stars in (2, 8, 16, 40):
+        rule = compile_pattern("*" * stars + "b")
+        start = time.perf_counter()
+        rule.regex.match(path)
+        elapsed = time.perf_counter() - start
+        assert elapsed < 0.05, f"{stars} stars took {elapsed:.2f}s"
+
+
+def test_star_run_semantics_are_unchanged():
+    """Collapsing runs is safe only if it preserves what they match."""
+    assert matches("*", "abc") is True
+    assert matches("*", "a/b") is True  # git really does ignore everything with `*`
+    assert matches("**", "a/b/c") is True
+    assert matches("***", "a/b/c") is True
+    assert matches("*.log", "deep/nested/app.log") is True
+    assert matches("app.log", "deep/nested/app.log") is True
+    assert matches("app.log", "app.logs") is False
+
+
+def test_hostile_gitignore_does_not_stall_discovery(tmp_path: Path):
+    """Discovery must survive a pathological .gitignore.
+
+    Both lines are pathological but neither matches anything, so nothing should
+    be excluded -- what is being asserted is that the walk completes and does not
+    raise, which is the part that used to hang or traceback.
+    """
+    root = tmp_path / "repo"
+    (root / "deep").mkdir(parents=True)
+    (root / "deep" / "target.txt").write_text("x\n", encoding="utf-8")
+    (root / ".gitignore").write_text("*" * 16 + "b\n[\n", encoding="utf-8")
+    found = discover(root)
+    assert "deep/target.txt" in paths(found)
