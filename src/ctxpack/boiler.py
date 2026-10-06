@@ -270,6 +270,12 @@ _WORD_RE = re.compile(r"\w")
 #: docstring.
 _TRIPLE_RE = re.compile(r'("""|\'\'\')')
 
+#: ``id(norm) -> (norm, (depths, in_string))``. Keyed by identity and holding a
+#: reference to the list, so the identity check makes a stale hit impossible;
+#: see :func:`_bracket_depths` for why this has to exist.
+_DEPTH_CACHE: dict[int, tuple[list[str], tuple[list[int], list[bool]]]] = {}
+_DEPTH_CACHE_MAX = 64
+
 
 def _split_lines(text: str) -> tuple[list[str], str]:
     """Split into logical lines plus the line ending to reassemble with.
@@ -363,10 +369,67 @@ def _ends_a_unit(line: str) -> bool:
     return stripped.endswith((":", "}", "]", ";"))
 
 
+def _bracket_depths(norm: list[str]) -> tuple[list[int], list[bool]]:
+    """Bracket depth entering each line, and whether each line is string content.
+
+    Returns ``(depths, in_string)`` with ``len(norm) + 1`` entries, so
+    ``depths[len(norm)]`` is the depth after the last line -- which is what a
+    caller checking a run that ends at end-of-file needs.
+
+    ``in_string[i]`` means *the text of line i is inside a triple-quoted
+    string*, which is deliberately not the same as "a string was open when the
+    line began". The opening and closing delimiter lines themselves report
+    ``False``; rule 3 of :func:`_replaceable` already rejects a run whose own
+    first or last line carries a delimiter, so the flag only needs to answer the
+    question rule 3 cannot: is a run with its delimiters further away sitting
+    in string content?
+
+    Memoised per file. :func:`_replaceable` runs once per candidate occurrence,
+    and recomputing the map each time would make the whole search quadratic in
+    line count -- the mistake ``_locate`` was rewritten to avoid.
+    """
+    cached = _DEPTH_CACHE.get(id(norm))
+    if cached is not None and cached[0] is norm:
+        return cached[1]
+
+    depths: list[int] = []
+    in_string: list[bool] = []
+    depth = 0
+    open_delim: str | None = None
+    for line in norm:
+        depths.append(depth)
+        code = "" if _is_anchor_line(line) else line
+        inside = open_delim is not None
+        if open_delim is None:
+            for quote in ('"""', "\'\'\'"):
+                if quote in code:
+                    open_delim = quote
+                    code = code.replace(quote, "", 1)
+                    break
+        if open_delim is None:
+            depth += sum(code.count(c) for c in "([{")
+            depth -= sum(code.count(c) for c in ")]}")
+            if depth < 0:
+                depth = 0
+        elif open_delim in code:
+            code = code.replace(open_delim, "", 1)
+            open_delim = None
+            inside = False  # the closing delimiter is not itself content
+        in_string.append(inside)
+
+    depths.append(depth)
+    in_string.append(open_delim is not None)
+    result = (depths, in_string)
+    if len(_DEPTH_CACHE) >= _DEPTH_CACHE_MAX:
+        _DEPTH_CACHE.clear()
+    _DEPTH_CACHE[id(norm)] = (norm, result)
+    return result
+
+
 def _replaceable(norm: list[str], start: int, length: int) -> bool:
     """The conservatism rules. See the module docstring for why each exists.
 
-    A run may be replaced only when all three hold:
+    A run may be replaced only when all of these hold:
 
     1. The preceding line (or the start of the file) is blank, a comment or a
        decorator. A run that starts right after code is in the middle of a
@@ -378,18 +441,32 @@ def _replaceable(norm: list[str], start: int, length: int) -> bool:
        ``import os`` follows it directly with no blank line in between -- the
        marker is itself a comment, so nothing that followed the comment can
        have been part of it.
-    3. The run touches no triple-quoted delimiter.
+    3. The run touches no triple-quoted delimiter on its own first or last line.
+    4. **The run is not inside anything.** Bracket depth is zero at both ends,
+       and the run is not within a triple-quoted string.
 
-    What is *not* checked, and what this therefore cannot promise: that the
-    marker is valid syntax at that position. If the run sits inside a
-    multi-line string that started before it, the comment replaces string
-    content. There is no parser in stdlib and no parser in this package, so the
-    honest position is that the surrounding lines are the guarantee.
+    Rule 4 was the one that was missing, and it was the only one that mattered.
+    Rules 1-3 all read the run *in isolation*, so a run cut out of the middle of
+    an unclosed bracket passed every one of them: a comment inside the bracket
+    satisfies rule 1, and a closing ``}`` on the last line satisfies rule 2.
+    With a file-specific opener -- which is what real modules look like, one
+    ``client_a_settings = merge(...)`` per service -- maximal-run extension
+    cannot absorb the opener either, so the run genuinely looked standalone:
 
-    Rule 2's two halves are alternatives, not requirements: requiring both
-    would reject the licence header that motivates the whole module, and
-    requiring neither would accept a run of ``}`` and blank lines cut out of the
-    middle of a block.
+        client_a_settings = {
+        # a note
+        "k1": 1,
+        }
+        a_x = 1
+
+    Factoring that produced ``client_a_settings = {`` followed by a marker, and
+    the file stopped parsing. Valid Python in, invalid Python out, silently, in
+    every affected file.
+
+    Both counts are naive on purpose. A bracket inside a string is miscounted,
+    which errs towards *rejecting* a run -- the safe direction, since the cost of
+    a missed hoist is a few saved tokens and the cost of a wrong one is broken
+    source.
     """
     if start > 0 and not _is_anchor_line(norm[start - 1]):
         return False
@@ -397,7 +474,17 @@ def _replaceable(norm: list[str], start: int, length: int) -> bool:
     if not _ends_at_boundary(norm, start, end):
         return False
     first, last = norm[start], norm[end - 1]
-    return _TRIPLE_RE.search(first) is None and _TRIPLE_RE.search(last) is None
+    if _TRIPLE_RE.search(first) or _TRIPLE_RE.search(last):
+        return False
+    depths, in_string = _bracket_depths(norm)
+    # Zero before the run means it does not begin inside an open bracket; zero
+    # after means it does not leave one open. Both maps carry len(norm) + 1
+    # entries, so `end` -- at most len(norm) -- is always a valid index.
+    if depths[start] != 0 or depths[end] != 0:
+        return False
+    # And it must not sit inside a triple-quoted string whose delimiters are
+    # more than one line away, which rule 3 above cannot see.
+    return not (in_string[start] or in_string[end - 1])
 
 
 def _ends_at_boundary(norm: list[str], start: int, end: int) -> bool:
@@ -1118,3 +1205,4 @@ def _fence(text: str, language: str) -> str:
         longest = max(longest, len(run))
     ticks = "`" * max(3, longest + 1)
     return f"{ticks}{language}\n{text}\n{ticks}"
+

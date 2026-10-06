@@ -242,7 +242,7 @@ plainly and points at `.ctxpack.json`, which always works.
 
 ### Beyond the bundle
 
-Four flags for the cases where "the most useful files" is not the same as "the
+Five flags for the cases where "the most useful files" is not the same as "the
 most important files".
 
 **`--diff SPEC` — pack only what changed.** Reviewing a change is where the
@@ -299,6 +299,37 @@ saves ~10% on a synthetic repo built to suit it. It is kept because it is free
 when off, it does help older and template-generated repositories, and reporting
 "we measured it and it saves 0.4%" beats implying otherwise.
 
+**`--watch` — rebuild while you work.** The edit/repack loop is the tedious part
+of keeping an agent's context current:
+
+```console
+$ ctxpack . --watch -b 20000 -o context.md
+ctxpack: wrote context.md (19,028 tokens exact, budget 20,000)
+ctxpack: watching 39 files, rebuilding on change (every 0.5s, ctrl-C to stop)
+ctxpack: modified src/ctxpack/boiler.py
+ctxpack: wrote context.md (19,028 tokens exact, budget 20,000)
+```
+
+The first bundle is written *before* the loop starts, so `--watch` never blocks
+with nothing on disk. A burst of writes — a formatter plus a save, an editor
+writing a temp file and renaming it — is coalesced into one rebuild, because
+spending the CPU once per edit rather than once per write is the entire point. A
+rebuild that fails is reported and the loop continues: a syntax error in a file
+mid-edit is the normal state of a repository being worked on, and a watcher that
+dies on the first one is useless exactly when it is needed. The previous bundle
+stays valid on disk.
+
+The debounce is bounded (`max_settle`, 5s). Without that bound a repository that
+keeps changing never goes quiet, the settle deadline keeps being pushed out, and
+the rebuild never happens at all — better to rebuild on a moving target than
+never to rebuild.
+
+It polls `(mtime, size)` per file rather than subscribing to filesystem events,
+because every cross-platform watcher for Python is a third-party package and this
+has none. `--watch-interval` overrides the poll period, and
+`CTXPACK_WATCH_INTERVAL` sets the same thing for every invocation. Precedence
+matches the rest of the CLI: typed flag > environment > default.
+
 ### Modes
 
 | mode | behaviour |
@@ -330,6 +361,7 @@ stdlib. There are tests for all three.
     --reach-weight W     boost files reachable from entrypoints
     --outline            replace bodies with structural outlines
     --factor-shared      hoist repeated blocks into one section
+    --watch              repack on change until interrupted
     --per-dir-frac       cap one directory's share (default 0.40)
     --no-config          ignore ctxpack.toml
     --dedupe-threshold   collapse files this similar (default 0.85)
@@ -389,7 +421,7 @@ pytest -q
 ruff check src tests scripts
 ```
 
-855 tests, run both with and without `tiktoken`, because "zero dependencies" is a
+925 tests, run both with and without `tiktoken`, because "zero dependencies" is a
 claim that needs verifying: if the estimator tests start needing `tiktoken`, the
 claim is wrong and CI says so.
 
@@ -399,6 +431,19 @@ that raised `re.PatternError` straight out of `ctxpack .`, and adjacent unbounde
 quantifiers that turned one `.gitignore` line into a multi-minute hang. All three
 have regression tests. `scripts/bench.py --check` runs in CI as a canary for the
 budget invariant and for render integrity against hostile content.
+
+Review found a fourth, and the worst kind: `--factor-shared` could rewrite valid
+Python into Python that does not parse. The conservatism rules all read a
+candidate run *in isolation*, so a run cut out of the middle of an unclosed
+bracket passed every one of them — a comment inside the bracket satisfies the
+anchor rule, a closing `}` satisfies the unit-boundary rule — and hoisting it left
+the opener dangling. Nothing errored; the bundle just contained broken source.
+The fix is a bracket-depth and triple-quote-region check that requires depth zero
+at both ends of a run. There are now 32 grid shapes asserting the property that
+actually matters: valid Python in, valid Python out, whatever the guards decide.
+
+Every one of those was found by a review or a test, not by reading the code. That
+is the argument for keeping both.
 
 ## License
 

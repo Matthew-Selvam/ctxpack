@@ -503,7 +503,13 @@ def _note_outline(result, stats: dict) -> None:
     )
 
 
-def cmd_pack(args: argparse.Namespace) -> int:
+def _build_bundle(args: argparse.Namespace):
+    """Pack once and return ``(text, result, tokenizer, budget)``.
+
+    Split out of :func:`cmd_pack` so ``--watch`` can rebuild through exactly the
+    same code path. A watcher that reimplemented the pipeline would drift from
+    the one-shot path, and the drift would only show up as a stale bundle.
+    """
     tokenizer = _tokenizer(args)
     budget = _budget(args)
     progress = None if args.quiet else _progress
@@ -546,8 +552,17 @@ def cmd_pack(args: argparse.Namespace) -> int:
             "skipped --factor-shared: --outline already replaced the bodies it "
             "would have looked for shared text in"
         )
-    text = render(result, args.format)
+    return render(result, args.format), result, tokenizer, budget, discovery
 
+
+def _emit(
+    args: argparse.Namespace,
+    text: str,
+    result,
+    tokenizer,
+    budget,
+) -> None:
+    """Write the bundle wherever the flags say, and report on it."""
     if args.out:
         Path(args.out).expanduser().write_text(text, encoding="utf-8")
         if not args.quiet:
@@ -570,6 +585,77 @@ def cmd_pack(args: argparse.Namespace) -> int:
 
     if args.stats and args.out and not args.quiet:
         _print_stats(result, tokenizer, file=sys.stderr)
+
+
+def cmd_pack(args: argparse.Namespace) -> int:
+    if getattr(args, "watch", False):
+        return _cmd_watch(args)
+
+    text, result, tokenizer, budget, _ = _build_bundle(args)
+    _emit(args, text, result, tokenizer, budget)
+    return 0
+
+
+def _cmd_watch(args: argparse.Namespace) -> int:
+    """Repack on change until interrupted.
+
+    The first build runs before the watch starts, so a fresh bundle exists even
+    if nothing is ever edited -- otherwise ``--watch`` would block before writing
+    anything at all, which looks like a hang.
+    """
+    from ctxpack.config import passed_dests
+    from ctxpack.watch import env_interval, run_watch
+
+    text, result, tokenizer, budget, discovery = _build_bundle(args)
+    _emit(args, text, result, tokenizer, budget)
+
+    paths = [c.path for c in discovery.files]
+    # Same precedence as everything else in this CLI: a typed flag beats the
+    # environment beats the built-in default. `env_interval` is the last two.
+    typed = passed_dests(getattr(args, "_parser", None), getattr(args, "_argv", []))
+    interval = (
+        args.watch_interval
+        if "watch_interval" in typed
+        else env_interval(default=args.watch_interval)
+    )
+
+    if not args.quiet:
+        print(
+            f"ctxpack: watching {len(paths)} files, rebuilding on change "
+            f"(every {interval:g}s, ctrl-C to stop)",
+            file=sys.stderr,
+        )
+
+    def repack() -> None:
+        text, result, tokenizer, budget, _ = _build_bundle(args)
+        _emit(args, text, result, tokenizer, budget)
+
+    def on_change(changes: list) -> None:
+        if args.quiet:
+            return
+        shown = ", ".join(str(c) for c in changes[:5])
+        more = f" (+{len(changes) - 5} more)" if len(changes) > 5 else ""
+        print(f"ctxpack: {shown}{more}", file=sys.stderr)
+
+    def on_error(exc: BaseException) -> None:
+        # A half-typed file is the normal state of a repo being worked on. Report
+        # it and keep waiting; the previous bundle on disk stays valid.
+        print(f"ctxpack: rebuild failed: {exc}", file=sys.stderr)
+
+    try:
+        run_watch(
+            paths,
+            repack,
+            root=Path(discovery.root),
+            interval=interval,
+            settle=args.watch_settle,
+            on_change=on_change,
+            on_error=on_error,
+        )
+    except KeyboardInterrupt:
+        if not args.quiet:
+            print("", file=sys.stderr)
+        return 0
     return 0
 
 
@@ -877,6 +963,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--outline-min-ratio", type=float, default=2.0, metavar="R",
         help="only outline a file whose structure is at least R times cheaper "
         "than its body (default: 2.0; 1.0 is break-even)",
+    )
+    pack.add_argument(
+        "--watch", action="store_true",
+        help="repack on change until interrupted (writes the first bundle "
+        "immediately)",
+    )
+    pack.add_argument(
+        "--watch-interval", type=float, default=0.5, metavar="S",
+        help="seconds between polls in --watch (default: 0.5; also settable "
+        "via CTXPACK_WATCH_INTERVAL)",
+    )
+    pack.add_argument(
+        "--watch-settle", type=float, default=0.4, metavar="S",
+        help="seconds of quiet required before a rebuild in --watch "
+        "(default: 0.4)",
     )
     _diff_flags(pack)
     pack.set_defaults(func=cmd_pack)

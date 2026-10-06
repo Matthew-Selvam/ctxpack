@@ -7,6 +7,7 @@ file it did not change, and never produce different output twice.
 
 from __future__ import annotations
 
+import ast
 import time
 from pathlib import Path
 
@@ -847,3 +848,271 @@ def test_locate_is_linear_in_file_count():
     assert elapsed < 8 * (first_elapsed + 0.05), (
         f"{first_elapsed:.2f}s -> {elapsed:.2f}s for 4x the files: superlinear"
     )
+
+
+def _syntax_error(text: str) -> SyntaxError:
+    """The SyntaxError ``ast.parse`` raises for ``text``. Only for messages."""
+    try:
+        ast.parse(text)
+    except SyntaxError as exc:
+        return exc
+    raise AssertionError("expected a SyntaxError")  # pragma: no cover
+
+
+def _parses_one(text: str) -> bool:
+    """Parse-or-false. Kept out of the callers' loops deliberately.
+
+    A ``try`` inside a loop body is a real per-iteration cost, and these loops
+    exist to be cheap enough to grid-search. Separate function, no loop cost.
+    """
+    try:
+        ast.parse(text)
+    except SyntaxError:
+        return False
+    return True
+
+
+def _parses(texts: dict[str, str]) -> bool:
+    """True if every input is valid Python.
+
+    The grid below deliberately includes shapes that are not valid, and a shape
+    whose *input* does not parse says nothing about whether factoring broke it.
+    """
+    return all(_parses_one(text) for text in texts.values())
+
+
+# ---------------------------------------------------------------------------
+# data-corruption regressions found by review
+# ---------------------------------------------------------------------------
+
+
+def _brace_run(tag: str) -> str:
+    return "\n".join([
+        f"{tag}_outer = {{",
+        f"# {tag} note",
+        '"k1": 1,', '"k2": 2,', '"k3": 3,', '"k4": 4,',
+        "}",
+        f"{tag}_x = 1",
+        "",
+    ])
+
+
+def _bracket_run(tag: str) -> str:
+    return "\n".join([
+        f"{tag} = container[",
+        f"# {tag} note",
+        "item_zero,", "item_one,", "item_two,",
+        "]",
+        tag,
+        "",
+    ])
+
+
+def _comment_closer_run(tag: str) -> str:
+    """Same defect via the *other* permissive branch: run ends in a comment."""
+    return "\n".join([
+        "import os",
+        f"{tag} = container[",
+        f"# {tag} note",
+        "item_zero,",
+        "]",
+        "# shared one", "# shared two", "# shared three",
+        tag,
+        "",
+    ])
+
+
+def _in_string_run(tag: str) -> str:
+    return "\n".join([
+        "import os", "",
+        f'README_{tag} = """',
+        f"# {tag}-specific preamble note:", "",
+        "# shared notes:", "they are maintained centrally,",
+        "one paragraph each,", "and revised quarterly:", "",
+        f"Closing text unique to {tag}.",
+        '"""', "",
+    ])
+
+
+@pytest.mark.parametrize(
+    "builder",
+    [_brace_run, _bracket_run, _comment_closer_run, _in_string_run],
+    ids=["brace", "bracket", "comment-closer", "inside-string"],
+)
+def test_a_run_inside_an_open_construct_is_never_substituted(builder):
+    """A run can be self-contained and still not be a whole unit.
+
+    The conservatism rules all read the run in isolation, so a run cut out of
+    the middle of an unclosed bracket passed every one: a comment inside the
+    bracket satisfies the anchor rule, and a closing `}` satisfies the
+    unit-boundary rule. With a file-specific opener -- as real modules have,
+    one `client_a_settings = merge(...)` per service -- maximal-run extension
+    cannot absorb the opener, so the run genuinely looked standalone.
+
+    Factoring it produced `{` followed by a marker: valid Python in, invalid
+    Python out, silently, in every affected file.
+    """
+    texts = {f"{tag}.py": builder(tag) for tag in ("alpha", "beta", "gamma")}
+    assert _parses(texts), "the inputs must be valid or the test proves nothing"
+
+    factored, used = factor(texts, find_blocks(texts))
+
+    assert used == [], f"run was hoisted out of an open construct: {used}"
+    assert factored == texts, "files were modified despite refusing the run"
+
+
+
+
+#: Every shape starts with an import and a blank line, so the anchor line that
+#: follows is preceded by something realistic.
+_TAIL_PREFIX = ["import os", ""]
+
+
+def _grid_shape(opener, closer, element, indent, anchor, ends_comment):
+    def build(tag: str) -> str:
+        head = [f"# {tag} note"] if anchor else []
+        body = [element.format(i=i) for i in range(4)]
+        tail = ["# a trailing comment"] if ends_comment else []
+        after = ["" if indent else f"{tag}_x = 1"]
+        block = [opener.format(t=tag), *body, *tail, closer, *after]
+        if indent:
+            # Indented statements only exist inside a block, so the indented half
+            # of the grid wraps itself in a function. Without this every indented
+            # shape is skipped as unparseable and half the grid -- the half where
+            # a run sits *inside* an enclosing suite, which is precisely where
+            # the original bug lived -- would test nothing.
+            lines = ["def _case():", *("    " + c for c in ["import os", "", *head])]
+            lines += [indent + c for c in block]
+        else:
+            lines = [*_TAIL_PREFIX, *head, *block]
+        return "\n".join(lines)
+
+    return {f"{tag}.py": build(tag) for tag in ("alpha", "beta", "gamma")}
+
+
+#: (opener template, closer, element template). Each element has to be valid
+#: inside its bracket, which is why the three shapes carry different bodies
+#: rather than sharing one: a bare ``item_0,`` is a syntax error inside a dict
+#: literal, and ``"k0": 0,`` is a syntax error inside a list or a call.
+#:
+#: The openers are *file-specific* on purpose. If they were identical across
+#: files, maximal-run extension would absorb the opener into the shared run and
+#: the shape would be safe by accident rather than by rule -- which is exactly
+#: what defeated the first attempts to reproduce the bug.
+_GRID_BRACKETS = [
+    ("x_{t} = {{", "}", '    "k{i}": {i},'),
+    ("y_{t} = [", "]", "    item_{i},"),
+    ("z_{t} = call(", ")", "    item_{i},"),
+    ("w_{t} = f([", "])", "    item_{i},"),
+]
+
+
+@pytest.mark.parametrize(
+    "opener,closer,element", _GRID_BRACKETS, ids=lambda v: v.strip()[:6]
+)
+@pytest.mark.parametrize("indent", ["", "    "], ids=["col0", "indented"])
+@pytest.mark.parametrize("anchor", [True, False], ids=["anchor", "no-anchor"])
+@pytest.mark.parametrize("ends_comment", [True, False], ids=["comment-end", "code-end"])
+def test_factoring_never_breaks_a_parse(
+    opener, closer, element, indent, anchor, ends_comment
+):
+    """Metamorphic guard: valid Python in, valid Python out.
+
+    48 shapes across bracket kinds, indentation, the anchor rule and the
+    unit-boundary rule. Broader and cheaper than any individual exploit -- and
+    it is the property that actually matters, so it is the one to assert. A
+    rewrite feature that emits source that does not compile is worse than one
+    that never runs at all.
+    """
+    texts = _grid_shape(opener, closer, element, indent, anchor, ends_comment)
+    if not _parses(texts):
+        pytest.skip("this shape is not valid Python to begin with")
+
+    factored, used = factor(texts, find_blocks(texts))
+    hoisted = {b.files[0] for b in used for b in ()} if used else set()
+
+    for path, text in factored.items():
+        if not _parses_one(text):  # pragma: no cover - the point of the test
+            exc = _syntax_error(text)
+            pytest.fail(
+                f"{path} stopped parsing: {exc.msg} (line {exc.lineno})\n"
+                f"opener={opener!r} indent={indent!r} anchor={anchor} "
+                f"comment_end={ends_comment}\n---\n{text}"
+            )
+    # Nothing changed means nothing was substituted: `used` counts blocks, not
+    # files, so this is the cheap consistency check that the two agree.
+    if not used:
+        assert factored == texts, "a file changed with no substitution recorded"
+    del hoisted
+
+
+def test_bracket_depth_map_reports_zero_around_a_balanced_block():
+    from ctxpack.boiler import _bracket_depths
+
+    norm = ["x = {", '"a": 1,', "}", "y = 2"]
+    depths, in_string = _bracket_depths(norm)
+    assert depths[0] == 0  # before `x = {`
+    assert depths[1] == 1  # inside the brace
+    assert depths[2] == 1
+    assert depths[3] == 0  # after the closing brace
+    assert depths[-1] == 0
+    assert not any(in_string)
+
+
+def test_bracket_depth_map_tracks_triple_quoted_strings():
+    from ctxpack.boiler import _bracket_depths
+
+    norm = ['DOC = """', "not code: { [ (", '"""', "code = 1"]
+    depths, in_string = _bracket_depths(norm)
+    assert in_string[0] is False
+    assert in_string[1] is True
+    assert in_string[2] is False
+    # Brackets inside the string must not count.
+    assert depths[3] == 0
+
+
+def test_brackets_in_comments_are_not_counted():
+    from ctxpack.boiler import _bracket_depths
+
+    depths, _ = _bracket_depths(["# see [optional] for details", "x = 1"])
+    assert depths[1] == 0
+
+
+def test_depth_cache_is_keyed_by_identity_not_equality():
+    """A cached answer must never be served for a different list.
+
+    The cache is keyed by ``id()``, which CPython reuses once an object is
+    collected -- so the guard has to compare the list itself, not just trust the
+    key. This drives it deliberately: compute for one list, drop it, allocate
+    another with the same shape and hope for a collision, then assert the answer
+    belongs to the list actually passed in.
+    """
+    import gc
+
+    from ctxpack.boiler import _bracket_depths
+
+    first = ["x = {", "y = 1"]
+    got = _bracket_depths(first)
+    assert got[0][1] == 1  # depth 1 inside the brace
+
+    del first
+    gc.collect()
+
+    # A list of identical length but different content, so a stale hit would be
+    # visibly wrong rather than coincidentally right.
+    second = ["a = (", "b = (", "c = 1"]
+    depths, _ = _bracket_depths(second)
+    assert depths == [0, 1, 2, 2], f"stale cache entry served: {depths}"
+
+
+def test_depth_cache_does_not_grow_without_bound():
+    """Many distinct files must not leak a depth map each.
+
+    Holding a reference to every file's line list for the life of the process
+    would be a slow memory leak in a long-lived agent that packs repeatedly.
+    """
+    from ctxpack.boiler import _DEPTH_CACHE, _DEPTH_CACHE_MAX, _bracket_depths
+
+    for i in range(_DEPTH_CACHE_MAX + 20):
+        _bracket_depths([f"x{i} = {{", f"y{i} = 1"])
+    assert len(_DEPTH_CACHE) <= _DEPTH_CACHE_MAX

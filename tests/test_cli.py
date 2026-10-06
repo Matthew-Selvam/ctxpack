@@ -364,3 +364,247 @@ def test_module_entrypoint_exists():
     import ctxpack.__main__ as entry
 
     assert entry.main is main
+
+
+# -- watch -------------------------------------------------------------------
+
+
+class _FakeClock:
+    """A clock the test drives, so the loop is exercised without wall time.
+
+    ``on_sleep`` runs after each tick and is where a test mutates the tree, which
+    is how a "file was edited" event is produced with no threads and no flakiness.
+    """
+
+    def __init__(self, on_sleep=None, edit_after: int | None = None, edit=None):
+        self.now = 0.0
+        self.ticks = 0
+        self._on_sleep = on_sleep
+        self._edit_after = edit_after
+        self._edit = edit
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+        self.ticks += 1
+        if self._edit is not None and self.ticks == self._edit_after:
+            self._edit()
+        if self._on_sleep is not None:
+            self._on_sleep(self)
+
+
+def _append_to(path: Path, text: str):
+    """Append to ``path`` -- the edit a fake clock performs."""
+
+    def do():
+        path.write_text(path.read_text(encoding="utf-8") + text, encoding="utf-8")
+
+    return do
+
+
+def _patch_loop(monkeypatch, wrapper):
+    """Replace the watch loop with ``wrapper``.
+
+    The CLI imports ``run_watch`` from inside ``_cmd_watch``, so patching the
+    module attribute is what takes effect. The *original* is captured first,
+    because a wrapper that wants to run real cycles must call the real thing --
+    calling ``watch.run_watch`` would find itself.
+    """
+    from ctxpack import watch
+
+    real = watch.run_watch
+
+    def entry(paths, repack, **kwargs):
+        return wrapper(real, paths, repack, **kwargs)
+
+    monkeypatch.setattr(watch, "run_watch", entry)
+
+
+def test_watch_writes_the_first_bundle_immediately(
+    capsys, project: Path, tmp_path: Path, monkeypatch
+):
+    """A watcher that blocks before writing anything looks like a hang.
+
+    This is the whole reason the first build happens outside the loop rather
+    than on the first detected change: nothing may have been edited yet.
+    """
+    seen: list[list[str]] = []
+
+    def wrapper(real, paths, repack, **kwargs):
+        seen.append(list(paths))
+        kwargs.pop("iterations", None)
+        return real(paths, repack, iterations=1, **kwargs)
+
+    _patch_loop(monkeypatch, wrapper)
+    target = tmp_path / "w.md"
+    code, _, _ = run(
+        capsys, ["pack", str(project), "-b", "4000", "--watch", "-q", "-o", str(target)]
+    )
+
+    assert code == 0
+    assert target.exists(), "the first bundle must exist before the loop starts"
+    assert target.read_text(encoding="utf-8").strip()
+    assert seen, "the watch loop should have been entered"
+    assert seen[0], "the watch set should be the discovered files, not empty"
+
+
+def test_watch_rebuilds_on_change(capsys, project: Path, tmp_path: Path, monkeypatch):
+    """A real edit reaches the real repack through the real debounce."""
+    builds = []
+
+    def wrapper(real, paths, repack, **kwargs):
+        clock = _FakeClock(edit_after=2, edit=_append_to(project / "src" / "app" / "main.py", "\n# edit\n"))
+        kwargs.pop("iterations", None)
+        return real(
+            paths,
+            lambda: (builds.append(1), repack())[1],
+            iterations=4,
+            clock=clock,
+            sleep=clock.sleep,
+            **kwargs,
+        )
+
+    _patch_loop(monkeypatch, wrapper)
+    code, _, err = run(
+        capsys,
+        ["pack", str(project), "-b", "4000", "--watch",
+         "--watch-interval", "1", "-o", str(tmp_path / "w.md")],
+    )
+
+    assert code == 0
+    assert builds, "the edit should have triggered a rebuild"
+    assert "modified" in err, "the change should be reported"
+    assert "wrote" in err, "the rebuild should have written a bundle"
+
+
+def test_watch_coalesces_a_burst_into_one_rebuild(
+    capsys, project: Path, tmp_path: Path, monkeypatch
+):
+    """Several writes in quick succession must not rebuild several times.
+
+    This is the difference between `--watch` and a script that repacks in a save
+    hook: the CPU is spent once per logical edit, not once per write.
+    """
+    builds = []
+    main_py = project / "src" / "app" / "main.py"
+    state = {"w": 0}
+
+    def keep_writing(_clock):
+        state["w"] += 1
+        if 2 <= state["w"] <= 5:
+            _append_to(main_py, f"\n# step {state['w']}\n")()
+
+    def wrapper(real, paths, repack, **kwargs):
+        clock = _FakeClock(on_sleep=keep_writing)
+        kwargs.pop("iterations", None)
+        return real(
+            paths,
+            lambda: (builds.append(1), repack())[1],
+            iterations=8,
+            clock=clock,
+            sleep=clock.sleep,
+            **kwargs,
+        )
+
+    _patch_loop(monkeypatch, wrapper)
+    run(
+        capsys,
+        ["pack", str(project), "-b", "4000", "--watch", "-q",
+         "--watch-interval", "1", "--watch-settle", "3",
+         "-o", str(tmp_path / "w.md")],
+    )
+    assert builds == [1], f"one logical edit produced {len(builds)} rebuilds"
+
+
+def test_watch_survives_a_failing_rebuild(
+    capsys, project: Path, tmp_path: Path, monkeypatch
+):
+    """A syntax error mid-edit must not kill the watcher.
+
+    A half-typed file is the normal state of a repository being worked on, and
+    a watcher that dies on the first one is useless exactly when it is needed.
+    """
+    attempts: list[int] = []
+
+    def boom():
+        attempts.append(1)
+        raise SyntaxError("invalid syntax")
+
+    def wrapper(real, paths, repack, **kwargs):
+        clock = _FakeClock(
+            edit_after=2, edit=_append_to(project / "src" / "app" / "main.py", "\n# edit\n")
+        )
+        kwargs.pop("iterations", None)
+        return real(
+            paths, boom, iterations=3, clock=clock, sleep=clock.sleep, **kwargs
+        )
+
+    _patch_loop(monkeypatch, wrapper)
+    target = tmp_path / "w.md"
+    code, _, err = run(
+        capsys,
+        ["pack", str(project), "-b", "4000", "--watch", "--watch-interval", "1",
+         "-o", str(target)],
+    )
+
+    assert code == 0
+    assert attempts, "the failing rebuild should have been attempted"
+    assert "rebuild failed" in err
+    # The previous bundle stays valid: a failed rebuild must not truncate it.
+    assert target.read_text(encoding="utf-8").strip(), "bundle was lost"
+
+
+def test_watch_interval_flag_beats_the_environment(
+    capsys, project: Path, tmp_path: Path, monkeypatch
+):
+    """Same precedence as every other flag here: typed flag > env > default."""
+    seen: dict = {}
+
+    def wrapper(real, paths, repack, **kwargs):
+        seen.update(kwargs)
+        return 0
+
+    _patch_loop(monkeypatch, wrapper)
+    monkeypatch.setenv("CTXPACK_WATCH_INTERVAL", "9.0")
+
+    run(capsys, ["pack", str(project), "-b", "4000", "--watch", "-q",
+                 "--watch-interval", "0.25", "-o", str(tmp_path / "w.md")])
+    assert seen["interval"] == 0.25
+
+    seen.clear()
+    run(capsys, ["pack", str(project), "-b", "4000", "--watch", "-q",
+                 "-o", str(tmp_path / "w2.md")])
+    assert seen["interval"] == 9.0, "env should win over the built-in default"
+
+
+def test_watch_reports_the_changed_paths(
+    capsys, project: Path, tmp_path: Path, monkeypatch
+):
+    """A rebuild that does not say what changed is not debuggable."""
+    from ctxpack.watch import Change
+
+    def wrapper(real, paths, repack, **kwargs):
+        kwargs["on_change"]([Change("src/app/main.py", "modified")])
+        return 0
+
+    _patch_loop(monkeypatch, wrapper)
+    _, _, err = run(
+        capsys,
+        ["pack", str(project), "-b", "4000", "--watch", "--watch-interval", "0.1",
+         "-o", str(tmp_path / "w.md")],
+    )
+    assert "modified src/app/main.py" in err
+    assert "watching" in err
+
+
+def test_watch_is_off_by_default(capsys, project: Path, monkeypatch):
+    """A regression guard: `pack` must not start blocking by accident."""
+
+    def wrapper(real, paths, repack, **kwargs):  # pragma: no cover
+        raise AssertionError("run_watch called without --watch")
+
+    _patch_loop(monkeypatch, wrapper)
+    code, _, _ = run(capsys, ["pack", str(project), "-b", "3000", "-q"])
+    assert code == 0
